@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /escrows/{escrowId} {
+      // Seller can read their own escrows
+      allow read: if request.auth != null && request.auth.uid == resource.data.sellerUid;
+
+      // Seller can create an escrow (initial pending_payment doc)
+      // but cannot set status to anything but pending_payment, no financial fields yet
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.sellerUid
+        && request.resource.data.status == "pending_payment"
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0;
+
+      // No client-side updates or deletes — everything goes through Functions (Admin SDK)
+      allow update, delete: if false;
+    }
+
+    // Buyer confirm page reads via a Cloud Function (Admin SDK), not direct Firestore access,
+    // since buyers aren't authenticated. Keep this locked down entirely.
+    match /transactions/{transactionId} {
+      allow read: if false;   // internal audit log only, exposed via Function if needed for demo
+      allow write: if false;  // Admin SDK only
+    }
+  }
+}

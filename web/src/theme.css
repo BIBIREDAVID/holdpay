@@ -1,0 +1,299 @@
+:root {
+  /* Palette — inspired by adire indigo-dye cloth and market receipt stamps,
+     not the default cream/terracotta AI palette. */
+  --ink: #1b1f3b;         /* deep indigo — primary text, headers */
+  --adire: #2e3a87;       /* mid indigo — primary brand */
+  --adire-deep: #171b3d;  /* near-black indigo — backgrounds */
+  --seal-gold: #d9a441;   /* wax-seal gold — accent, "held" state */
+  --paper: #faf7f0;       /* warm off-white — page background */
+  --paper-dim: #f0ecdf;   /* card background */
+  --ok: #3c8c5d;          /* released / success */
+  --danger: #c1443c;      /* disputed / error */
+  --line: #1b1f3b1a;      /* hairline borders */
+
+  --font-display: "Sora", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  margin: 0 0 0.4em 0;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--adire);
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--adire);
+  outline-offset: 2px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.page {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.topbar .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--adire-deep);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--seal-gold);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.topbar .name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+}
+
+.card {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px;
+  margin-bottom: 16px;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.field .hint {
+  font-size: 12px;
+  color: #6b6f8a;
+  margin-top: 4px;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  font-size: 15px;
+  font-family: var(--font-body);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+.field input[type="number"] {
+  font-family: var(--font-mono);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px 18px;
+  border-radius: 10px;
+  border: none;
+  font-weight: 600;
+  font-size: 15px;
+  transition: transform 0.08s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn-primary {
+  background: var(--adire-deep);
+  color: white;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-confirm {
+  background: var(--ok);
+  color: white;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--adire);
+  border: 1.5px solid var(--line);
+}
+
+.amount-display {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.muted {
+  color: #6b6f8a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ---- Seal badge: the signature element ----
+   A stamped-receipt motif that marks each escrow's status, echoing the
+   ink stamps used on Nigerian market and bank teller receipts. Rotated
+   slightly off-axis like a real hand stamp; ring style + fill communicate
+   state without relying on a generic colored pill. */
+
+.seal {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 8px 12px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transform: rotate(-1.5deg);
+}
+
+.seal .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.seal-pending {
+  color: #8a8ea8;
+  background: #8a8ea80f;
+}
+.seal-held {
+  color: var(--adire);
+  background: #2e3a870f;
+}
+.seal-shipped {
+  color: var(--seal-gold);
+  background: #d9a4410f;
+}
+.seal-released {
+  color: var(--ok);
+  background: #3c8c5d0f;
+}
+.seal-disputed {
+  color: var(--danger);
+  background: #c1443c0f;
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline li {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.timeline li:last-child {
+  border-bottom: none;
+}
+
+.timeline .step-label {
+  font-weight: 600;
+  min-width: 96px;
+}
+
+.reserved-account {
+  background: var(--adire-deep);
+  color: white;
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.reserved-account .bank {
+  font-size: 13px;
+  color: #cfd3f2;
+  margin-bottom: 4px;
+}
+
+.reserved-account .number {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.03em;
+}
+
+.error-banner {
+  background: #c1443c14;
+  border: 1px solid #c1443c40;
+  color: var(--danger);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
