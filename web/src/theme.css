@@ -10,12 +10,26 @@
   --ok: #3c8c5d;          /* released / success */
   --danger: #c1443c;      /* disputed / error */
   --line: #1b1f3b1a;      /* hairline borders */
+  --muted: #6b6f8a;       /* secondary text */
+
+  --adire-tint: #2e3a870f;
+  --gold-tint: #d9a4410f;
+  --ok-tint: #3c8c5d0f;
+  --danger-tint: #c1443c14;
+  --muted-tint: #8a8ea80f;
 
   --font-display: "Sora", sans-serif;
   --font-body: "Inter", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 
   --radius: 14px;
+  --radius-sm: 10px;
+
+  --ease-snap: cubic-bezier(0.2, 0.9, 0.3, 1.1);
+
+  /* Single breakpoint where the layout gets a second column.
+     Below this, everything is identical to the original mobile design. */
+  --bp-desktop: 960px;
 }
 
 * {
@@ -29,6 +43,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-body);
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root {
@@ -52,9 +67,14 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: default;
+}
+
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible {
   outline: 2px solid var(--adire);
   outline-offset: 2px;
 }
@@ -63,6 +83,16 @@ input:focus-visible {
   font-family: var(--font-mono);
 }
 
+.muted {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------- */
+/* Layout                                                            */
+/* ---------------------------------------------------------------- */
+
 .page {
   max-width: 480px;
   margin: 0 auto;
@@ -70,14 +100,9 @@ input:focus-visible {
   min-height: 100vh;
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 28px;
-}
-
-.topbar .mark {
+/* Shared logo mark, reused in the topbar, the desktop sidebar, and the
+   auth brand panel — so all three read as the same product. */
+.mark {
   width: 30px;
   height: 30px;
   border-radius: 8px;
@@ -89,13 +114,322 @@ input:focus-visible {
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 15px;
+  flex-shrink: 0;
 }
 
-.topbar .name {
+.name {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 17px;
 }
+
+/* ---------------------------------------------------------------- */
+/* Topbar + nav (mobile, and the < 960px view of authenticated pages) */
+/* ---------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.nav-link {
+  position: relative;
+  z-index: 1;
+  padding: 6px 8px;
+  border-radius: 999px;
+  color: var(--adire);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.nav-link:hover {
+  color: var(--adire-deep);
+}
+
+.nav-link-active {
+  color: var(--adire-deep);
+  font-weight: 700;
+}
+
+.nav-seal {
+  position: absolute;
+  top: -6px;
+  height: 30px;
+  border-radius: 999px;
+  border: 2px solid var(--seal-gold);
+  background: var(--gold-tint);
+  transform: rotate(-1.5deg);
+  pointer-events: none;
+  transition: left 0.32s var(--ease-snap), width 0.32s var(--ease-snap),
+    opacity 0.2s ease;
+}
+
+.nav-seal-stamp {
+  animation: navStamp 320ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+
+@keyframes navStamp {
+  0% {
+    transform: rotate(-1.5deg) scale(1.35);
+    opacity: 0.4;
+  }
+  60% {
+    transform: rotate(-3deg) scale(0.92);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(-1.5deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.nav-logout {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13.5px;
+  padding: 4px 2px;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.nav-logout:hover {
+  color: var(--danger);
+}
+
+.nav-logout:disabled {
+  opacity: 0.5;
+}
+
+/* ---------------------------------------------------------------- */
+/* Desktop app shell — seller pages (CreateEscrow, StatusTracker)    */
+/* Below --bp-desktop: sidebar is hidden, .topbar shows as before.   */
+/* Above it: sidebar takes over branding + nav, .topbar hides, and   */
+/* .page widens and drops its centering margin.                     */
+/* ---------------------------------------------------------------- */
+
+.app-sidebar {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .app-shell {
+    display: grid;
+    grid-template-columns: 232px 1fr;
+    min-height: 100vh;
+  }
+
+  .app-sidebar {
+    display: flex;
+    flex-direction: column;
+    background: var(--adire-deep);
+    color: white;
+    padding: 28px 22px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .app-shell .topbar {
+    display: none;
+  }
+
+  .app-shell .page {
+    max-width: 760px;
+    margin: 0;
+    padding: 48px 56px 64px;
+  }
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-sidebar .mark {
+  background: var(--seal-gold);
+  color: var(--adire-deep);
+}
+
+.app-sidebar .name {
+  color: white;
+}
+
+.sidebar-nav {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 28px;
+}
+
+.sidebar-link {
+  position: relative;
+  z-index: 1;
+  padding: 10px 14px;
+  border-radius: 10px;
+  color: #cfd3f2;
+  font-weight: 500;
+  text-decoration: none;
+  font-size: 14px;
+  transition: color 0.15s ease;
+}
+
+.sidebar-link:hover {
+  color: white;
+}
+
+.sidebar-link-active {
+  color: white;
+  font-weight: 700;
+}
+
+.sidebar-seal {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  border-radius: 10px;
+  border: 2px solid var(--seal-gold);
+  background: rgba(217, 164, 65, 0.12);
+  transform: rotate(-1deg);
+  pointer-events: none;
+  transition: top 0.32s var(--ease-snap), height 0.32s var(--ease-snap),
+    opacity 0.2s ease;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.sidebar-foot .nav-logout {
+  color: #9599c2;
+}
+
+.sidebar-foot .nav-logout:hover {
+  color: #ff8a80;
+}
+
+/* ---------------------------------------------------------------- */
+/* Desktop auth shell — Login/Signup and BuyerPay                    */
+/* A brand panel fills the left side above --bp-desktop; below it,   */
+/* it's not rendered and .page behaves exactly as it always has.     */
+/* ---------------------------------------------------------------- */
+
+.auth-brand {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .auth-shell {
+    display: grid;
+    grid-template-columns: 1fr 480px;
+    min-height: 100vh;
+  }
+
+  .auth-brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    background: var(--adire-deep);
+    color: white;
+    padding: 64px;
+  }
+
+  .auth-shell .page {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 100vh;
+  }
+}
+
+.auth-brand-seal {
+  position: absolute;
+  right: -90px;
+  top: -90px;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  border: 2px solid rgba(217, 164, 65, 0.22);
+  transform: rotate(-8deg);
+}
+
+.auth-brand-seal::before {
+  content: "";
+  position: absolute;
+  inset: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(217, 164, 65, 0.14);
+}
+
+.auth-brand-mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 48px;
+  position: relative;
+}
+
+.auth-brand-mark .mark {
+  background: var(--seal-gold);
+  color: var(--adire-deep);
+}
+
+.auth-brand-mark .name {
+  color: white;
+}
+
+.auth-brand-title {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 1.18;
+  max-width: 420px;
+  margin: 0 0 16px;
+  position: relative;
+}
+
+.auth-brand-body {
+  color: #cfd3f2;
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 380px;
+  margin: 0 0 32px;
+  position: relative;
+}
+
+.auth-brand-steps {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.auth-brand-steps .seal-held {
+  color: #8ea0f5;
+  background: rgba(142, 160, 245, 0.12);
+}
+
+.auth-brand-steps .seal-shipped {
+  color: var(--seal-gold);
+  background: rgba(217, 164, 65, 0.12);
+}
+
+.auth-brand-steps .seal-released {
+  color: #6fd19a;
+  background: rgba(111, 209, 154, 0.12);
+}
+
+/* ---------------------------------------------------------------- */
+/* Cards + form fields                                               */
+/* ---------------------------------------------------------------- */
 
 .card {
   background: white;
@@ -119,7 +453,7 @@ input:focus-visible {
 
 .field .hint {
   font-size: 12px;
-  color: #6b6f8a;
+  color: var(--muted);
   margin-top: 4px;
 }
 
@@ -128,11 +462,34 @@ input:focus-visible {
   width: 100%;
   padding: 11px 13px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-size: 15px;
   font-family: var(--font-body);
   background: var(--paper);
   color: var(--ink);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: #9a9db8;
+}
+
+.field input:hover,
+.field textarea:hover {
+  border-color: #1b1f3b33;
+}
+
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--adire);
+  background: white;
+}
+
+.field input:disabled,
+.field textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .field textarea {
@@ -144,6 +501,10 @@ input:focus-visible {
   font-family: var(--font-mono);
 }
 
+/* ---------------------------------------------------------------- */
+/* Buttons                                                           */
+/* ---------------------------------------------------------------- */
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -151,11 +512,12 @@ input:focus-visible {
   gap: 8px;
   width: 100%;
   padding: 13px 18px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   border: none;
   font-weight: 600;
   font-size: 15px;
-  transition: transform 0.08s ease, opacity 0.15s ease;
+  transition: transform 0.08s ease, opacity 0.15s ease,
+    background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .btn:active {
@@ -165,6 +527,10 @@ input:focus-visible {
 .btn-primary {
   background: var(--adire-deep);
   color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--ink);
 }
 
 .btn-primary:disabled {
@@ -177,30 +543,36 @@ input:focus-visible {
   color: white;
 }
 
+.btn-confirm:hover:not(:disabled) {
+  background: #34754d;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--adire);
   border: 1.5px solid var(--line);
 }
 
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--adire);
+  background: var(--adire-tint);
+}
+
+/* ---------------------------------------------------------------- */
+/* Amounts                                                           */
+/* ---------------------------------------------------------------- */
+
 .amount-display {
   font-family: var(--font-mono);
   font-size: 28px;
   font-weight: 500;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
-.muted {
-  color: #6b6f8a;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-/* ---- Seal badge: the signature element ----
-   A stamped-receipt motif that marks each escrow's status, echoing the
-   ink stamps used on Nigerian market and bank teller receipts. Rotated
-   slightly off-axis like a real hand stamp; ring style + fill communicate
-   state without relying on a generic colored pill. */
+/* ---------------------------------------------------------------- */
+/* Seal badge — the signature element                                */
+/* ---------------------------------------------------------------- */
 
 .seal {
   display: inline-flex;
@@ -225,25 +597,92 @@ input:focus-visible {
 }
 
 .seal-pending {
-  color: #8a8ea8;
-  background: #8a8ea80f;
+  color: var(--muted);
+  background: var(--muted-tint);
 }
 .seal-held {
   color: var(--adire);
-  background: #2e3a870f;
+  background: var(--adire-tint);
 }
 .seal-shipped {
   color: var(--seal-gold);
-  background: #d9a4410f;
+  background: var(--gold-tint);
 }
 .seal-released {
   color: var(--ok);
-  background: #3c8c5d0f;
+  background: var(--ok-tint);
 }
 .seal-disputed {
   color: var(--danger);
-  background: #c1443c0f;
+  background: var(--danger-tint);
 }
+
+/* ---------------------------------------------------------------- */
+/* Responsive grids — dashboard stats + escrow list                  */
+/* auto-fit means 2 columns fits naturally on a 480px phone, and     */
+/* 3 columns once the sidebar frees up desktop width, with no        */
+/* separate breakpoint needed for the stats.                         */
+/* ---------------------------------------------------------------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.stat-grid .card {
+  margin-bottom: 0;
+}
+
+.escrow-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 960px) {
+  .escrow-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .escrow-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.escrow-grid .card {
+  margin-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- */
+/* Create-escrow live preview column                                 */
+/* ---------------------------------------------------------------- */
+
+.create-preview {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .create-shell {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 32px;
+    align-items: start;
+  }
+
+  .create-preview {
+    display: block;
+    position: sticky;
+    top: 48px;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Timeline                                                          */
+/* ---------------------------------------------------------------- */
 
 .timeline {
   list-style: none;
@@ -268,6 +707,10 @@ input:focus-visible {
   min-width: 96px;
 }
 
+/* ---------------------------------------------------------------- */
+/* Reserved account                                                   */
+/* ---------------------------------------------------------------- */
+
 .reserved-account {
   background: var(--adire-deep);
   color: white;
@@ -286,14 +729,38 @@ input:focus-visible {
   font-family: var(--font-mono);
   font-size: 24px;
   letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
 }
 
+/* ---------------------------------------------------------------- */
+/* Error banner                                                      */
+/* ---------------------------------------------------------------- */
+
 .error-banner {
-  background: #c1443c14;
+  background: var(--danger-tint);
   border: 1px solid #c1443c40;
   color: var(--danger);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 12px 14px;
   font-size: 14px;
   margin-bottom: 16px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Motion                                                             */
+/* ---------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-seal,
+  .nav-link,
+  .sidebar-seal,
+  .sidebar-link,
+  .btn,
+  .field input,
+  .field textarea {
+    transition: none;
+  }
+  .nav-seal-stamp {
+    animation: none;
+  }
 }

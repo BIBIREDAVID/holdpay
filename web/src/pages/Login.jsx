@@ -5,6 +5,7 @@ import {
   createUserWithEmailAndPassword,
 } from "firebase/auth";
 import { auth } from "../lib/firebase";
+import BrandPanel from "../components/BrandPanel";
 
 export default function Login({ mode = "login" }) {
   const [email, setEmail] = useState("");
@@ -34,63 +35,66 @@ export default function Login({ mode = "login" }) {
   }
 
   return (
-    <div className="page">
-      <Topbar />
-      <h1>{isSignup ? "Create your seller account" : "Log in"}</h1>
-      <p className="muted" style={{ marginBottom: 20 }}>
-        {isSignup
-          ? "Set up escrows and get paid safely from your Instagram or WhatsApp sales."
-          : "Welcome back — access your escrows and payouts."}
-      </p>
+    <div className="auth-shell">
+      <BrandPanel variant="seller" />
+      <div className="page">
+        <Topbar />
+        <h1>{isSignup ? "Create your seller account" : "Log in"}</h1>
+        <p className="muted" style={{ marginBottom: 20 }}>
+          {isSignup
+            ? "Set up escrows and get paid safely from your Instagram or WhatsApp sales."
+            : "Welcome back — access your escrows and payouts."}
+        </p>
 
-      {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner">{error}</div>}
 
-      <form onSubmit={handleSubmit}>
-        <div className="card">
-          {isSignup && (
+        <form onSubmit={handleSubmit}>
+          <div className="card">
+            {isSignup && (
+              <div className="field">
+                <label>Business or shop name</label>
+                <input
+                  value={businessName}
+                  onChange={(e) => setBusinessName(e.target.value)}
+                  placeholder="e.g. Ada's Closet"
+                />
+              </div>
+            )}
             <div className="field">
-              <label>Business or shop name</label>
+              <label>Email</label>
               <input
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-                placeholder="e.g. Ada's Closet"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
               />
             </div>
+            <div className="field">
+              <label>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="At least 6 characters"
+                autoComplete={isSignup ? "new-password" : "current-password"}
+              />
+            </div>
+          </div>
+
+          <button className="btn btn-primary" type="submit" disabled={submitting}>
+            {submitting ? "Please wait…" : isSignup ? "Create account" : "Log in"}
+          </button>
+        </form>
+
+        <p className="muted" style={{ marginTop: 16, textAlign: "center" }}>
+          {isSignup ? (
+            <>Already have an account? <Link to="/login">Log in</Link></>
+          ) : (
+            <>New to HoldPay? <Link to="/signup">Create an account</Link></>
           )}
-          <div className="field">
-            <label>Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </div>
-          <div className="field">
-            <label>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 6 characters"
-              autoComplete={isSignup ? "new-password" : "current-password"}
-            />
-          </div>
-        </div>
-
-        <button className="btn btn-primary" type="submit" disabled={submitting}>
-          {submitting ? "Please wait…" : isSignup ? "Create account" : "Log in"}
-        </button>
-      </form>
-
-      <p className="muted" style={{ marginTop: 16, textAlign: "center" }}>
-        {isSignup ? (
-          <>Already have an account? <Link to="/login">Log in</Link></>
-        ) : (
-          <>New to HoldPay? <Link to="/signup">Create an account</Link></>
-        )}
-      </p>
+        </p>
+      </div>
     </div>
   );
 }

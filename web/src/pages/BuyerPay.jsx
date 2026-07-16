@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import SealBadge from "../components/SealBadge";
+import BrandPanel from "../components/BrandPanel";
 import { FUNCTIONS_BASE_URL } from "../lib/firebase";
 
 function formatNaira(kobo) {
@@ -94,18 +95,24 @@ export default function BuyerPay() {
 
   if (loading) {
     return (
-      <div className="page">
-        <Topbar />
-        <p className="muted">Loading your escrow…</p>
+      <div className="auth-shell">
+        <BrandPanel variant="buyer" />
+        <div className="page">
+          <Topbar />
+          <p className="muted">Loading your escrow…</p>
+        </div>
       </div>
     );
   }
 
   if (error && !escrow) {
     return (
-      <div className="page">
-        <Topbar />
-        <div className="error-banner">{error}</div>
+      <div className="auth-shell">
+        <BrandPanel variant="buyer" />
+        <div className="page">
+          <Topbar />
+          <div className="error-banner">{error}</div>
+        </div>
       </div>
     );
   }
@@ -113,92 +120,95 @@ export default function BuyerPay() {
   const canAct = escrow.status === "held" || escrow.status === "shipped";
 
   return (
-    <div className="page">
-      <Topbar />
+    <div className="auth-shell">
+      <BrandPanel variant="buyer" />
+      <div className="page">
+        <Topbar />
 
-      <div style={{ marginBottom: 14 }}>
-        <SealBadge status={escrow.status} />
-      </div>
-
-      <h1 style={{ fontSize: 22 }}>{escrow.itemDesc}</h1>
-      <div className="amount-display" style={{ marginBottom: 20 }}>
-        {formatNaira(escrow.amount)}
-      </div>
-
-      {escrow.status === "pending_payment" && (
-        <div className="reserved-account">
-          <div className="bank">Pay into this account — {escrow.monnify?.bankName || "bank details loading"}</div>
-          <div className="number">{escrow.monnify?.reservedAccountNumber}</div>
+        <div style={{ marginBottom: 14 }}>
+          <SealBadge status={escrow.status} />
         </div>
-      )}
 
-      {error && <div className="error-banner">{error}</div>}
+        <h1 style={{ fontSize: 22 }}>{escrow.itemDesc}</h1>
+        <div className="amount-display" style={{ marginBottom: 20 }}>
+          {formatNaira(escrow.amount)}
+        </div>
 
-      <div className="card">
-        <h3 style={{ fontSize: 15 }}>How this works</h3>
-        <ul className="timeline">
-          <li>
-            <span className="step-label">1. Pay</span>
-            <span className="muted">Your money is held by HoldPay, not the seller.</span>
-          </li>
-          <li>
-            <span className="step-label">2. Ship</span>
-            <span className="muted">Seller sends your item.</span>
-          </li>
-          <li>
-            <span className="step-label">3. Confirm</span>
-            <span className="muted">You confirm it arrived — seller gets paid.</span>
-          </li>
-        </ul>
-      </div>
-
-      {canAct && !showDisputeForm && (
-        <>
-          <button className="btn btn-confirm" onClick={handleConfirm} disabled={confirming}>
-            {confirming ? "Confirming…" : "I've received my item — release funds"}
-          </button>
-          <button
-            className="btn btn-ghost"
-            style={{ marginTop: 10 }}
-            onClick={() => setShowDisputeForm(true)}
-          >
-            Something's wrong — raise a dispute
-          </button>
-        </>
-      )}
-
-      {canAct && showDisputeForm && (
-        <div className="card">
-          <h3 style={{ fontSize: 15 }}>What happened?</h3>
-          <div className="field">
-            <textarea
-              value={disputeReason}
-              onChange={(e) => setDisputeReason(e.target.value)}
-              placeholder="e.g. item never arrived, wrong item, damaged on arrival"
-            />
+        {escrow.status === "pending_payment" && (
+          <div className="reserved-account">
+            <div className="bank">Pay into this account — {escrow.monnify?.bankName || "bank details loading"}</div>
+            <div className="number">{escrow.monnify?.reservedAccountNumber}</div>
           </div>
-          <button className="btn btn-primary" onClick={handleDispute} disabled={disputing || !disputeReason.trim()}>
-            {disputing ? "Submitting…" : "Submit dispute"}
-          </button>
-          <button
-            className="btn btn-ghost"
-            style={{ marginTop: 10 }}
-            onClick={() => setShowDisputeForm(false)}
-          >
-            Cancel
-          </button>
+        )}
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <div className="card">
+          <h3 style={{ fontSize: 15 }}>How this works</h3>
+          <ul className="timeline">
+            <li>
+              <span className="step-label">1. Pay</span>
+              <span className="muted">Your money is held by HoldPay, not the seller.</span>
+            </li>
+            <li>
+              <span className="step-label">2. Ship</span>
+              <span className="muted">Seller sends your item.</span>
+            </li>
+            <li>
+              <span className="step-label">3. Confirm</span>
+              <span className="muted">You confirm it arrived — seller gets paid.</span>
+            </li>
+          </ul>
         </div>
-      )}
 
-      {escrow.status === "released" && (
-        <p className="muted">Funds released to the seller. Thanks for using HoldPay.</p>
-      )}
+        {canAct && !showDisputeForm && (
+          <>
+            <button className="btn btn-confirm" onClick={handleConfirm} disabled={confirming}>
+              {confirming ? "Confirming…" : "I've received my item — release funds"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              style={{ marginTop: 10 }}
+              onClick={() => setShowDisputeForm(true)}
+            >
+              Something's wrong — raise a dispute
+            </button>
+          </>
+        )}
 
-      {escrow.status === "disputed" && (
-        <p className="muted">
-          This escrow is under dispute. HoldPay will follow up with both parties.
-        </p>
-      )}
+        {canAct && showDisputeForm && (
+          <div className="card">
+            <h3 style={{ fontSize: 15 }}>What happened?</h3>
+            <div className="field">
+              <textarea
+                value={disputeReason}
+                onChange={(e) => setDisputeReason(e.target.value)}
+                placeholder="e.g. item never arrived, wrong item, damaged on arrival"
+              />
+            </div>
+            <button className="btn btn-primary" onClick={handleDispute} disabled={disputing || !disputeReason.trim()}>
+              {disputing ? "Submitting…" : "Submit dispute"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              style={{ marginTop: 10 }}
+              onClick={() => setShowDisputeForm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {escrow.status === "released" && (
+          <p className="muted">Funds released to the seller. Thanks for using HoldPay.</p>
+        )}
+
+        {escrow.status === "disputed" && (
+          <p className="muted">
+            This escrow is under dispute. HoldPay will follow up with both parties.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
