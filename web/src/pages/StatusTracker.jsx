@@ -10,12 +10,64 @@ function formatNaira(kobo) {
   return `₦${(kobo / 100).toLocaleString("en-NG")}`;
 }
 
+// autoReleaseAt can be a Firestore Timestamp (has .toDate) or, briefly,
+// null right after ship before the write round-trips back down.
+function formatCountdown(autoReleaseAt, now) {
+  if (!autoReleaseAt) return null;
+  const target = autoReleaseAt.toDate ? autoReleaseAt.toDate() : new Date(autoReleaseAt);
+  const msLeft = target.getTime() - now.getTime();
+  if (msLeft <= 0) return "Releasing shortly";
+
+  const days = Math.floor(msLeft / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((msLeft % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+  if (days >= 1) return `Auto-releases in ${days}d ${hours}h`;
+  const mins = Math.floor((msLeft % (60 * 60 * 1000)) / (60 * 1000));
+  return `Auto-releases in ${hours}h ${mins}m`;
+}
+
+function downloadCSV(escrows) {
+  const headers = ["Item", "Amount (NGN)", "Status", "Created", "Shipped", "Released"];
+  const rows = escrows.map((e) => [
+    e.itemDesc || "",
+    (e.amount / 100).toFixed(2),
+    e.status || "",
+    e.createdAt?.toDate ? e.createdAt.toDate().toISOString() : "",
+    e.shippedAt?.toDate ? e.shippedAt.toDate().toISOString() : "",
+    e.releasedAt?.toDate ? e.releasedAt.toDate().toISOString() : "",
+  ]);
+
+  // Quote every field and escape embedded quotes — item descriptions are
+  // free text and can contain commas.
+  const csv = [headers, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `holdpay-escrows-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export default function StatusTracker() {
   const { user } = useAuth();
   const [escrows, setEscrows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [shippingId, setShippingId] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [now, setNow] = useState(new Date());
+
+  // Ticks once a minute so countdown text stays roughly accurate without
+  // re-rendering on every second.
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -108,26 +160,46 @@ export default function StatusTracker() {
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {["all", "held", "shipped", "disputed", "released"].map((f) => (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {["all", "held", "shipped", "disputed", "released"].map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className="btn-ghost"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  textTransform: "capitalize",
+                  background: filter === f ? "var(--adire-deep)" : "transparent",
+                  color: filter === f ? "white" : "var(--adire)",
+                  border: filter === f ? "none" : "1.5px solid var(--line)",
+                }}
+              >
+                {f === "all" ? "All" : f}
+              </button>
+            ))}
+          </div>
+
+          {escrows.length > 0 && (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
+              onClick={() => downloadCSV(escrows)}
               className="btn-ghost"
               style={{
                 padding: "6px 12px",
                 borderRadius: 999,
                 fontSize: 12.5,
                 fontWeight: 600,
-                textTransform: "capitalize",
-                background: filter === f ? "var(--adire-deep)" : "transparent",
-                color: filter === f ? "white" : "var(--adire)",
-                border: filter === f ? "none" : "1.5px solid var(--line)",
+                background: "transparent",
+                color: "var(--adire)",
+                border: "1.5px solid var(--line)",
               }}
             >
-              {f === "all" ? "All" : f}
+              Export CSV
             </button>
-          ))}
+          )}
         </div>
 
         {filtered.length === 0 && (
@@ -147,6 +219,12 @@ export default function StatusTracker() {
 
               {e.status === "disputed" && e.disputeReason && (
                 <p className="muted" style={{ marginBottom: 10 }}>Reason: {e.disputeReason}</p>
+              )}
+
+              {e.status === "shipped" && e.autoReleaseAt && (
+                <p className="muted" style={{ marginBottom: 10 }}>
+                  {formatCountdown(e.autoReleaseAt, now)} unless a dispute is raised.
+                </p>
               )}
 
               {e.status === "held" && (

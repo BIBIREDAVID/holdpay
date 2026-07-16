@@ -8,11 +8,21 @@ const crypto = require("crypto");
 admin.initializeApp();
 const db = admin.firestore();
 
-// Monnify signs webhook payloads with your secret key (HMAC SHA512).
-// Store the real value with: firebase functions:secrets:set MONNIFY_SECRET_KEY
+// Monnify signs webhook payloads with your secret key (HMAC SHA512), and the
+// same secret key doubles as the password half of Basic auth for API calls.
+// Store the real values with:
+//   firebase functions:secrets:set MONNIFY_SECRET_KEY
+//   firebase functions:secrets:set MONNIFY_API_KEY
 const MONNIFY_SECRET_KEY = defineSecret("MONNIFY_SECRET_KEY");
+const MONNIFY_API_KEY = defineSecret("MONNIFY_API_KEY");
 
-const AUTO_RELEASE_DAYS = 7;
+// Sandbox for now — swap to https://api.monnify.com once you go live.
+const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
+
+// Fallback only. Each escrow can now set its own `autoReleaseDays` at
+// creation time (see CreateEscrow); this is what applies if that field is
+// somehow missing (e.g. an escrow created before this feature existed).
+const DEFAULT_AUTO_RELEASE_DAYS = 7;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,6 +49,43 @@ async function logTransaction(escrowId, type, payload) {
     payload,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+}
+
+// Simple in-memory cache so a warm function instance reuses the same
+// Monnify access token instead of re-authenticating on every call — the
+// token is valid for about an hour per Monnify's docs. Resets naturally
+// whenever the instance cold-starts, which is fine.
+let cachedMonnifyToken = null;
+let cachedMonnifyTokenExpiry = 0;
+
+async function getMonnifyAccessToken(apiKey, secretKey) {
+  if (cachedMonnifyToken && Date.now() < cachedMonnifyTokenExpiry) {
+    return cachedMonnifyToken;
+  }
+
+  const basicAuth = Buffer.from(`${apiKey}:${secretKey}`).toString("base64");
+  const res = await fetch(`${MONNIFY_BASE_URL}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${basicAuth}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Monnify auth failed: ${res.status}`);
+  }
+
+  const body = await res.json();
+  const token = body?.responseBody?.accessToken;
+  const expiresIn = body?.responseBody?.expiresIn || 3600;
+
+  if (!token) {
+    throw new Error("Monnify auth response missing accessToken");
+  }
+
+  cachedMonnifyToken = token;
+  // Refresh a little early so we never hand out a token that's about to expire.
+  cachedMonnifyTokenExpiry = Date.now() + (expiresIn - 60) * 1000;
+
+  return token;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +240,13 @@ exports.getEscrowByToken = onRequest(async (req, res) => {
         : null,
       paidAt: data.paidAt || null,
       shippedAt: data.shippedAt || null,
+      // Sent as epoch millis, not the raw Firestore Timestamp — plain JSON
+      // has no Timestamp type, so the client would otherwise receive an
+      // opaque {seconds, nanoseconds} object with no .toDate().
+      autoReleaseAt: data.autoReleaseAt ? data.autoReleaseAt.toMillis() : null,
+      autoReleaseDays: Number.isFinite(data.autoReleaseDays)
+        ? data.autoReleaseDays
+        : DEFAULT_AUTO_RELEASE_DAYS,
       confirmedAt: data.confirmedAt || null,
       releasedAt: data.releasedAt || null,
       disputedAt: data.disputedAt || null,
@@ -202,6 +256,71 @@ exports.getEscrowByToken = onRequest(async (req, res) => {
     return res.status(500).send("Internal error");
   }
 });
+
+// ---------------------------------------------------------------------------
+// 1c. resolveBankAccount
+//     Called from the seller's form (debounced, on blur of the account
+//     fields) to confirm the account name tied to an account number + bank
+//     code BEFORE it's saved as the payout destination. Uses Monnify's
+//     free Name Enquiry API (available on sandbox and live). Requires the
+//     seller to be authenticated — this is a paid-adjacent lookup, not a
+//     public endpoint.
+// ---------------------------------------------------------------------------
+
+exports.resolveBankAccount = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).send("Method not allowed");
+      }
+
+      const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+      if (!idToken) {
+        return res.status(401).send("Missing auth token");
+      }
+      try {
+        await admin.auth().verifyIdToken(idToken);
+      } catch (err) {
+        return res.status(401).send("Invalid auth token");
+      }
+
+      const { accountNumber, bankCode } = req.body || {};
+      if (!accountNumber || !bankCode) {
+        return res.status(400).send("Missing accountNumber or bankCode");
+      }
+
+      const accessToken = await getMonnifyAccessToken(
+        MONNIFY_API_KEY.value(),
+        MONNIFY_SECRET_KEY.value()
+      );
+
+      const validateRes = await fetch(
+        `${MONNIFY_BASE_URL}/api/v1/disbursements/account/validate?` +
+          `accountNumber=${encodeURIComponent(accountNumber)}&bankCode=${encodeURIComponent(bankCode)}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+
+      const body = await validateRes.json();
+
+      if (!validateRes.ok || !body.requestSuccessful) {
+        logger.warn("resolveBankAccount: validation failed", body);
+        return res.status(422).json({
+          error: body.responseMessage || "Couldn't verify that account number. Double-check it and the bank.",
+        });
+      }
+
+      return res.status(200).json({
+        accountName: body.responseBody?.accountName || null,
+        accountNumber: body.responseBody?.accountNumber || accountNumber,
+        bankCode,
+      });
+    } catch (err) {
+      logger.error("resolveBankAccount: unexpected error", err);
+      return res.status(500).send("Internal error");
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // 2. releaseFunds
@@ -317,8 +436,14 @@ exports.markShipped = onRequest(async (req, res) => {
       if (data.sellerUid !== decoded.uid) return { error: "forbidden" };
       if (data.status !== "held") return { error: "invalid_state", currentStatus: data.status };
 
+      // Each escrow can set its own window at creation time; fall back to
+      // the default for older escrows that predate the field.
+      const autoReleaseDays = Number.isFinite(data.autoReleaseDays)
+        ? data.autoReleaseDays
+        : DEFAULT_AUTO_RELEASE_DAYS;
+
       const autoReleaseAt = admin.firestore.Timestamp.fromDate(
-        new Date(Date.now() + AUTO_RELEASE_DAYS * 24 * 60 * 60 * 1000)
+        new Date(Date.now() + autoReleaseDays * 24 * 60 * 60 * 1000)
       );
 
       tx.update(escrowRef, {
@@ -398,19 +523,20 @@ exports.raiseDispute = onRequest(async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // 3. autoReleaseCron
-//    Runs daily. Sweeps escrows that have been 'shipped' for more than
-//    AUTO_RELEASE_DAYS with no dispute, and auto-releases them.
+//    Runs daily. Sweeps 'shipped' escrows whose per-escrow autoReleaseAt
+//    deadline has passed with no dispute, and auto-releases them.
 // ---------------------------------------------------------------------------
 
 exports.autoReleaseCron = onSchedule("every 24 hours", async () => {
-  const cutoff = admin.firestore.Timestamp.fromDate(
-    new Date(Date.now() - AUTO_RELEASE_DAYS * 24 * 60 * 60 * 1000)
-  );
+  // autoReleaseAt is computed per-escrow in markShipped, respecting each
+  // seller's chosen window — so the cron just needs to find anything whose
+  // deadline has already passed, rather than applying one global cutoff.
+  const now = admin.firestore.Timestamp.now();
 
   const staleShipped = await db
     .collection("escrows")
     .where("status", "==", "shipped")
-    .where("shippedAt", "<=", cutoff)
+    .where("autoReleaseAt", "<=", now)
     .get();
 
   if (staleShipped.empty) {
@@ -435,7 +561,7 @@ exports.autoReleaseCron = onSchedule("every 24 hours", async () => {
       });
 
       await logTransaction(doc.id, "auto_released", {
-        reason: `No confirmation within ${AUTO_RELEASE_DAYS} days of shipment`,
+        reason: "No confirmation within the auto-release window",
       });
 
       // Real Monnify Single Transfer call would go here too, same as releaseFunds.

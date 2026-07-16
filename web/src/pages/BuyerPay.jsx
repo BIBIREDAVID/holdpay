@@ -8,6 +8,21 @@ function formatNaira(kobo) {
   return `₦${(kobo / 100).toLocaleString("en-NG")}`;
 }
 
+// escrow.autoReleaseAt arrives as epoch millis over JSON (see the
+// getEscrowByToken function — plain JSON has no Timestamp type).
+function formatCountdown(autoReleaseAtMillis, now) {
+  if (!autoReleaseAtMillis) return null;
+  const msLeft = autoReleaseAtMillis - now.getTime();
+  if (msLeft <= 0) return "Releasing shortly";
+
+  const days = Math.floor(msLeft / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((msLeft % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+  if (days >= 1) return `Auto-releases in ${days}d ${hours}h`;
+  const mins = Math.floor((msLeft % (60 * 60 * 1000)) / (60 * 1000));
+  return `Auto-releases in ${hours}h ${mins}m`;
+}
+
 export default function BuyerPay() {
   const { token } = useParams();
   const [escrow, setEscrow] = useState(null);
@@ -17,6 +32,12 @@ export default function BuyerPay() {
   const [disputing, setDisputing] = useState(false);
   const [showDisputeForm, setShowDisputeForm] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   async function fetchEscrow() {
     try {
@@ -141,6 +162,18 @@ export default function BuyerPay() {
           </div>
         )}
 
+        {escrow.status === "shipped" && escrow.autoReleaseAt && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>
+              {formatCountdown(escrow.autoReleaseAt, now)}
+            </div>
+            <p className="muted" style={{ margin: 0 }}>
+              Unless you raise a dispute before then, the seller is paid automatically —
+              you don't need to do anything if the item's as expected.
+            </p>
+          </div>
+        )}
+
         {error && <div className="error-banner">{error}</div>}
 
         <div className="card">
@@ -156,7 +189,10 @@ export default function BuyerPay() {
             </li>
             <li>
               <span className="step-label">3. Confirm</span>
-              <span className="muted">You confirm it arrived — seller gets paid.</span>
+              <span className="muted">
+                You confirm it arrived — seller gets paid. If you don't, it releases
+                automatically {escrow.autoReleaseDays || 7} days after shipping.
+              </span>
             </li>
           </ul>
         </div>

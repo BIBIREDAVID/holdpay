@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../lib/firebase";
+import { db, FUNCTIONS_BASE_URL } from "../lib/firebase";
 import { useAuth } from "../lib/AuthContext";
 import SellerNav from "../components/SellerNav";
 import AppSidebar from "../components/AppSidebar";
@@ -15,6 +15,10 @@ function formatNairaPreview(amountNaira) {
   return `₦${n.toLocaleString("en-NG")}`;
 }
 
+const MIN_RELEASE_DAYS = 1;
+const MAX_RELEASE_DAYS = 30;
+const DEFAULT_RELEASE_DAYS = 7;
+
 export default function CreateEscrow() {
   const { user } = useAuth();
   const [itemDesc, setItemDesc] = useState("");
@@ -22,9 +26,65 @@ export default function CreateEscrow() {
   const [buyerPhone, setBuyerPhone] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
+  const [autoReleaseDays, setAutoReleaseDays] = useState(String(DEFAULT_RELEASE_DAYS));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null);
+
+  // Bank account resolve — debounced so it fires ~500ms after the seller
+  // stops typing in either field, not on every keystroke.
+  const [resolving, setResolving] = useState(false);
+  const [resolvedName, setResolvedName] = useState(null);
+  const [resolveError, setResolveError] = useState(null);
+  const resolveTimer = useRef(null);
+  const resolveRequestId = useRef(0);
+
+  useEffect(() => {
+    setResolvedName(null);
+    setResolveError(null);
+
+    if (resolveTimer.current) clearTimeout(resolveTimer.current);
+
+    const accNum = accountNumber.trim();
+    const code = bankCode.trim();
+    if (accNum.length < 10 || !code) return;
+
+    resolveTimer.current = setTimeout(async () => {
+      const thisRequest = ++resolveRequestId.current;
+      setResolving(true);
+      try {
+        const idToken = await user.getIdToken();
+        const res = await fetch(`${FUNCTIONS_BASE_URL}/resolveBankAccount`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ accountNumber: accNum, bankCode: code }),
+        });
+        const body = await res.json().catch(() => ({}));
+
+        // Ignore stale responses if the seller kept typing after this fired.
+        if (thisRequest !== resolveRequestId.current) return;
+
+        if (!res.ok) {
+          setResolveError(body.error || "Couldn't verify that account. You can still continue.");
+          return;
+        }
+        setResolvedName(body.accountName);
+      } catch (err) {
+        if (thisRequest !== resolveRequestId.current) return;
+        console.error(err);
+        setResolveError("Couldn't reach the bank lookup. You can still continue.");
+      } finally {
+        if (thisRequest === resolveRequestId.current) setResolving(false);
+      }
+    }, 500);
+
+    return () => {
+      if (resolveTimer.current) clearTimeout(resolveTimer.current);
+    };
+  }, [accountNumber, bankCode, user]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -32,6 +92,16 @@ export default function CreateEscrow() {
 
     if (!itemDesc.trim() || !amountNaira || !buyerPhone.trim()) {
       setError("Fill in the item, price, and buyer's phone number.");
+      return;
+    }
+
+    const releaseDaysNum = parseInt(autoReleaseDays, 10);
+    if (
+      !Number.isFinite(releaseDaysNum) ||
+      releaseDaysNum < MIN_RELEASE_DAYS ||
+      releaseDaysNum > MAX_RELEASE_DAYS
+    ) {
+      setError(`Release window needs to be between ${MIN_RELEASE_DAYS} and ${MAX_RELEASE_DAYS} days.`);
       return;
     }
 
@@ -48,13 +118,16 @@ export default function CreateEscrow() {
         sellerBankAccount: {
           accountNumber: accountNumber.trim(),
           bankCode: bankCode.trim(),
-          accountName: "",
+          // Filled in automatically if the resolve lookup succeeded — the
+          // seller isn't blocked from continuing if it didn't.
+          accountName: resolvedName || "",
         },
         buyerContact: {
           email: "",
           phone: buyerPhone.trim(),
         },
         buyerConfirmToken: confirmToken,
+        autoReleaseDays: releaseDaysNum,
         monnify: {
           reservedAccountNumber: "PENDING",
           reservedAccountRef,
@@ -177,6 +250,33 @@ export default function CreateEscrow() {
                   placeholder="058 (GTBank)"
                 />
                 <div className="hint">Swap this for a bank-name dropdown before demo day.</div>
+              </div>
+
+              {resolving && <div className="hint">Checking account…</div>}
+              {!resolving && resolvedName && (
+                <div className="hint" style={{ color: "var(--ok)", fontWeight: 600 }}>
+                  Paying out to: {resolvedName}
+                </div>
+              )}
+              {!resolving && resolveError && (
+                <div className="hint" style={{ color: "var(--danger)" }}>{resolveError}</div>
+              )}
+            </div>
+
+            <div className="card">
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Auto-release window</label>
+                <input
+                  type="number"
+                  min={MIN_RELEASE_DAYS}
+                  max={MAX_RELEASE_DAYS}
+                  value={autoReleaseDays}
+                  onChange={(e) => setAutoReleaseDays(e.target.value)}
+                />
+                <div className="hint">
+                  Days after you mark an item shipped before funds release automatically if
+                  the buyer hasn't confirmed or disputed. Default 7, max 30.
+                </div>
               </div>
             </div>
 
