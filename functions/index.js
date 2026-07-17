@@ -325,6 +325,56 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// 1b. getBanks
+//     Powers a real bank-name dropdown on the create form instead of a raw
+//     code text input — pulls the live list from Monnify rather than a
+//     hardcoded array, so codes can't drift out of sync with what Monnify
+//     actually accepts. Cached in memory for an hour since this barely
+//     changes and it's called on every visit to the create page.
+// ---------------------------------------------------------------------------
+
+let cachedBanks = null;
+let cachedBanksExpiry = 0;
+
+exports.getBanks = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  withCors(async (req, res) => {
+    try {
+      if (cachedBanks && Date.now() < cachedBanksExpiry) {
+        return res.status(200).json({ banks: cachedBanks });
+      }
+
+      const accessToken = await getMonnifyAccessToken(
+        MONNIFY_API_KEY.value(),
+        MONNIFY_SECRET_KEY.value()
+      );
+
+      const banksRes = await fetch(`${MONNIFY_BASE_URL}/api/v1/banks`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const body = await banksRes.json();
+
+      if (!banksRes.ok || !body.requestSuccessful) {
+        logger.warn("getBanks: Monnify returned an error", body);
+        return res.status(502).json({ error: "Couldn't load bank list" });
+      }
+
+      const banks = (body.responseBody || [])
+        .map((b) => ({ code: b.code, name: b.name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      cachedBanks = banks;
+      cachedBanksExpiry = Date.now() + 60 * 60 * 1000;
+
+      return res.status(200).json({ banks });
+    } catch (err) {
+      logger.error("getBanks: unexpected error", err);
+      return res.status(500).json({ error: "Internal error" });
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
 // 1c. resolveBankAccount
 //     Called from the seller's form (debounced, on blur of the account
 //     fields) to confirm the account name tied to an account number + bank

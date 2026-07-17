@@ -501,6 +501,31 @@ textarea:focus-visible {
   font-family: var(--font-mono);
 }
 
+.field input[type="file"] {
+  padding: 9px 10px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.field input[type="file"]::file-selector-button {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  color: white;
+  background: var(--adire-deep);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-right: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.field input[type="file"]::file-selector-button:hover {
+  background: var(--ink);
+}
+
 /* ---------------------------------------------------------------- */
 /* Buttons                                                           */
 /* ---------------------------------------------------------------- */

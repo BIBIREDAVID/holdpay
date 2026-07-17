@@ -5,6 +5,7 @@ import { useAuth } from "../lib/AuthContext";
 import SellerNav from "../components/SellerNav";
 import AppSidebar from "../components/AppSidebar";
 import SealBadge from "../components/SealBadge";
+import { QRCodeSVG } from "qrcode.react";
 
 function formatNaira(kobo) {
   return `₦${(kobo / 100).toLocaleString("en-NG")}`;
@@ -66,6 +67,14 @@ export default function StatusTracker() {
   // Bank-detail edit — one escrow's edit form open at a time, kept simple
   // since this is a rare action, not something sellers do repeatedly.
   const [editingId, setEditingId] = useState(null);
+  const [detailsId, setDetailsId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  function copyLink(link, escrowId) {
+    navigator.clipboard.writeText(link);
+    setCopiedId(escrowId);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
   const [editAccountNumber, setEditAccountNumber] = useState("");
   const [editBankCode, setEditBankCode] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
@@ -271,12 +280,27 @@ export default function StatusTracker() {
         <div className="escrow-grid">
           {filtered.map((e) => (
             <div className="card" key={e.id}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{e.itemDesc}</div>
-                  <div className="mono muted">{formatNaira(e.amount)}</div>
+              <div
+                onClick={() => setDetailsId(detailsId === e.id ? null : e.id)}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, cursor: "pointer", gap: 12 }}
+              >
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", minWidth: 0 }}>
+                  {e.photoUrl && (
+                    <img
+                      src={e.photoUrl}
+                      alt=""
+                      style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", flexShrink: 0 }}
+                    />
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{e.itemDesc}</div>
+                    <div className="mono muted">{formatNaira(e.amount)}</div>
+                  </div>
                 </div>
                 <SealBadge status={e.status} />
+              </div>
+              <div className="hint" style={{ marginTop: -6, marginBottom: 10 }}>
+                {detailsId === e.id ? "Tap to hide link & QR" : "Tap to view link & QR"}
               </div>
 
               {e.status === "disputed" && e.disputeReason && (
@@ -287,6 +311,37 @@ export default function StatusTracker() {
                 <p className="muted" style={{ marginBottom: 10 }}>
                   {formatCountdown(e.autoReleaseAt, now)} unless a dispute is raised.
                 </p>
+              )}
+
+              {detailsId === e.id && e.buyerConfirmToken && (
+                <div style={{ padding: 12, marginBottom: 12, background: "var(--paper)", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                  <div className="hint" style={{ marginBottom: 8 }}>Buyer's payment link</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    <input
+                      readOnly
+                      value={`${window.location.origin}/pay/${e.buyerConfirmToken}`}
+                      onFocus={(ev) => ev.target.select()}
+                      style={{ fontSize: 12.5 }}
+                    />
+                    <button
+                      className="btn btn-ghost"
+                      style={{ width: "auto", padding: "0 14px", flexShrink: 0 }}
+                      onClick={() => copyLink(`${window.location.origin}/pay/${e.buyerConfirmToken}`, e.id)}
+                    >
+                      {copiedId === e.id ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "center" }}>
+                    <div style={{ background: "white", padding: 12, borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                      <QRCodeSVG
+                        value={`${window.location.origin}/pay/${e.buyerConfirmToken}`}
+                        size={140}
+                        fgColor="#1b1f3b"
+                        level="M"
+                      />
+                    </div>
+                  </div>
+                </div>
               )}
 
               {e.status === "held" && (

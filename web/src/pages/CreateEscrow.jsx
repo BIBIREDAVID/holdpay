@@ -201,8 +201,11 @@ export default function CreateEscrow() {
       const buyerLink = `${window.location.origin}/pay/${confirmToken}`;
       setCreated({ escrowId: escrowRef.id, buyerLink });
     } catch (err) {
-      console.error(err);
-      setError("Couldn't create the escrow. Check your connection and try again.");
+      console.error("CreateEscrow: setDoc failed", err);
+      // Surfacing err.message (not just a generic string) so a real cause —
+      // permission-denied, offline, quota, etc. — is visible in the UI
+      // itself without needing to open DevTools to diagnose it.
+      setError(`Couldn't create the escrow: ${err.message || "unknown error"}. Check your connection and try again.`);
     } finally {
       setSubmitting(false);
     }
