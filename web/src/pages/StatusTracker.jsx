@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
+import { collection, query, where, onSnapshot, orderBy, doc } from "firebase/firestore";
 import { db, FUNCTIONS_BASE_URL } from "../lib/firebase";
 import { useAuth } from "../lib/AuthContext";
 import SellerNav from "../components/SellerNav";
@@ -61,6 +61,61 @@ export default function StatusTracker() {
   const [shippingId, setShippingId] = useState(null);
   const [filter, setFilter] = useState("all");
   const [now, setNow] = useState(new Date());
+  const [stats, setStats] = useState(null);
+
+  // Bank-detail edit — one escrow's edit form open at a time, kept simple
+  // since this is a rare action, not something sellers do repeatedly.
+  const [editingId, setEditingId] = useState(null);
+  const [editAccountNumber, setEditAccountNumber] = useState("");
+  const [editBankCode, setEditBankCode] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState(null);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(doc(db, "sellerStats", user.uid), (snap) => {
+      setStats(snap.exists() ? snap.data() : { totalCount: 0, completedCount: 0, disputedCount: 0 });
+    });
+    return () => unsub();
+  }, [user]);
+
+  function startEdit(e) {
+    setEditingId(e.id);
+    setEditAccountNumber(e.sellerBankAccount?.accountNumber || "");
+    setEditBankCode(e.sellerBankAccount?.bankCode || "");
+    setEditError(null);
+  }
+
+  async function saveEdit(escrowId) {
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const idToken = await user.getIdToken();
+      const res = await fetch(`${FUNCTIONS_BASE_URL}/updateSellerBankAccount`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          escrowId,
+          accountNumber: editAccountNumber.trim(),
+          bankCode: editBankCode.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setEditError(text || "Couldn't update payout details.");
+        return;
+      }
+      setEditingId(null);
+    } catch (err) {
+      console.error(err);
+      setEditError("Couldn't reach HoldPay. Check your connection.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
 
   // Ticks once a minute so countdown text stays roughly accurate without
   // re-rendering on every second.
@@ -138,6 +193,13 @@ export default function StatusTracker() {
       <div className="page">
         <SellerNav active="dashboard" />
         <h1>Your escrows</h1>
+        {stats && (
+          <p className="muted" style={{ marginTop: -12, marginBottom: 20 }}>
+            {stats.completedCount || 0} completed
+            {stats.disputedCount > 0 ? ` · ${stats.disputedCount} disputed` : ""} — this is what
+            buyers see on your payment links.
+          </p>
+        )}
 
         <div className="stat-grid">
           <div className="card">
@@ -235,6 +297,56 @@ export default function StatusTracker() {
                 >
                   {shippingId === e.id ? "Marking…" : "Mark as shipped"}
                 </button>
+              )}
+
+              {e.status !== "released" && e.status !== "refunded" && (
+                <>
+                  {editingId !== e.id ? (
+                    <button
+                      className="nav-logout"
+                      style={{ marginTop: 10, fontSize: 12.5 }}
+                      onClick={() => startEdit(e)}
+                    >
+                      Edit payout details
+                    </button>
+                  ) : (
+                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+                      {editError && <div className="error-banner">{editError}</div>}
+                      <div className="field">
+                        <label>Account number</label>
+                        <input
+                          value={editAccountNumber}
+                          onChange={(ev) => setEditAccountNumber(ev.target.value)}
+                        />
+                      </div>
+                      <div className="field" style={{ marginBottom: 10 }}>
+                        <label>Bank code</label>
+                        <input
+                          value={editBankCode}
+                          onChange={(ev) => setEditBankCode(ev.target.value)}
+                        />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="btn btn-primary"
+                          style={{ flex: 1 }}
+                          onClick={() => saveEdit(e.id)}
+                          disabled={savingEdit}
+                        >
+                          {savingEdit ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ flex: 1 }}
+                          onClick={() => setEditingId(null)}
+                          disabled={savingEdit}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ))}

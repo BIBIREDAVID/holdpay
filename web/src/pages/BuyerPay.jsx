@@ -150,6 +150,30 @@ export default function BuyerPay() {
           <SealBadge status={escrow.status} />
         </div>
 
+        {escrow.sellerStats && (
+          <p className="muted" style={{ marginTop: -6, marginBottom: 14 }}>
+            This seller has completed {escrow.sellerStats.completedCount}{" "}
+            escrow{escrow.sellerStats.completedCount === 1 ? "" : "s"} on HoldPay
+            {escrow.sellerStats.disputedCount > 0
+              ? ` · ${escrow.sellerStats.disputedCount} dispute${escrow.sellerStats.disputedCount === 1 ? "" : "s"}`
+              : " · 0 disputes"}
+          </p>
+        )}
+
+        {escrow.photoUrl && (
+          <img
+            src={escrow.photoUrl}
+            alt={escrow.itemDesc}
+            style={{
+              width: "100%",
+              aspectRatio: "4 / 3",
+              objectFit: "cover",
+              borderRadius: "var(--radius)",
+              marginBottom: 14,
+            }}
+          />
+        )}
+
         <h1 style={{ fontSize: 22 }}>{escrow.itemDesc}</h1>
         <div className="amount-display" style={{ marginBottom: 20 }}>
           {formatNaira(escrow.amount)}

@@ -24,5 +24,16 @@ service cloud.firestore {
       allow read: if false;   // internal audit log only, exposed via Function if needed for demo
       allow write: if false;  // Admin SDK only
     }
+
+    // Seller trust counters (totalCount / completedCount / disputedCount).
+    // A seller can read their own — used to show their own track record on
+    // the dashboard. Buyers see the same numbers, but only via
+    // getEscrowByToken (Admin SDK), never direct Firestore access, same
+    // pattern as escrows themselves. Written only by the onEscrowCreated /
+    // onEscrowStatusChange triggers — never client-writable.
+    match /sellerStats/{sellerId} {
+      allow read: if request.auth != null && request.auth.uid == sellerId;
+      allow write: if false;
+    }
   }
 }

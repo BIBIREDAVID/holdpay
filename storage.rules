@@ -1,0 +1,17 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // sellers/{sellerUid}/escrows/{escrowId}/photo.jpg
+    // Path-based check (no Firestore lookup needed): a seller can only
+    // write under their own uid segment. Public read because buyers are
+    // unauthenticated — same trust model as reserved account numbers,
+    // which are already exposed this way via getEscrowByToken.
+    match /sellers/{sellerUid}/escrows/{escrowId}/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.uid == sellerUid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

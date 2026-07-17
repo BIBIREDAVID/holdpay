@@ -1,5 +1,6 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
@@ -15,6 +16,8 @@ const db = admin.firestore();
 //   firebase functions:secrets:set MONNIFY_API_KEY
 const MONNIFY_SECRET_KEY = defineSecret("MONNIFY_SECRET_KEY");
 const MONNIFY_API_KEY = defineSecret("MONNIFY_API_KEY");
+// firebase functions:secrets:set RESEND_API_KEY
+const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 
 // Sandbox for now — swap to https://api.monnify.com once you go live.
 const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
@@ -49,6 +52,51 @@ async function logTransaction(escrowId, type, payload) {
     payload,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
+}
+
+// Every browser-facing function needs this — the frontend (Vercel) and
+// these functions (Firebase) are always different origins, in both local
+// dev (Vite :5173 vs emulator :5001) and production. Safe to allow any
+// origin here specifically because auth is a Bearer token in a header, not
+// a cookie — there's no session to leak cross-site. monnifyWebhook is
+// server-to-server and doesn't need this; it isn't wrapped.
+function withCors(handler) {
+  return async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+    return handler(req, res);
+  };
+}
+
+// Fire-and-forget-ish: logs and swallows failures rather than throwing, since
+// a broken email send should never block a status update or payment flow —
+// notifications are a nice-to-have, not something that can hold up money
+// moving. Silently no-ops if `to` is empty (buyer email is optional).
+async function sendEmail(apiKey, { to, subject, html }) {
+  if (!to) return;
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      // "from" needs a domain verified in your Resend dashboard — swap this
+      // for whatever you already set up for NACOS.
+      body: JSON.stringify({ from: "HoldPay <notifications@holdpay.app>", to, subject, html }),
+    });
+    if (!res.ok) {
+      logger.warn(`sendEmail: Resend returned ${res.status}`, await res.text());
+    }
+  } catch (err) {
+    logger.warn("sendEmail: failed", err);
+  }
 }
 
 // Simple in-memory cache so a warm function instance reuses the same
@@ -205,7 +253,7 @@ exports.monnifyWebhook = onRequest(
 //     escrows since Firestore rules block direct client reads.
 // ---------------------------------------------------------------------------
 
-exports.getEscrowByToken = onRequest(async (req, res) => {
+exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
   try {
     const token = req.query.token || (req.body && req.body.token);
     if (!token) {
@@ -225,13 +273,32 @@ exports.getEscrowByToken = onRequest(async (req, res) => {
     const doc = match.docs[0];
     const data = doc.data();
 
+    // Trust stats are a separate lookup, not embedded on the escrow doc —
+    // sellerStats/{uid} is a running counter kept in sync by the
+    // onEscrowStatusChange trigger below, so this stays a single cheap
+    // doc read rather than counting the seller's whole escrow history
+    // on every buyer page load.
+    let sellerStats = { completedCount: 0, disputedCount: 0 };
+    if (data.sellerUid) {
+      const statsDoc = await db.collection("sellerStats").doc(data.sellerUid).get();
+      if (statsDoc.exists) {
+        const s = statsDoc.data();
+        sellerStats = {
+          completedCount: s.completedCount || 0,
+          disputedCount: s.disputedCount || 0,
+        };
+      }
+    }
+
     // Only return fields the buyer actually needs — never leak seller bank
     // details or the token itself back out.
     return res.status(200).json({
       escrowId: doc.id,
       status: data.status,
       itemDesc: data.itemDesc,
+      photoUrl: data.photoUrl || null,
       amount: data.amount,
+      sellerStats,
       monnify: data.monnify
         ? {
             reservedAccountNumber: data.monnify.reservedAccountNumber,
@@ -255,7 +322,7 @@ exports.getEscrowByToken = onRequest(async (req, res) => {
     logger.error("getEscrowByToken: unexpected error", err);
     return res.status(500).send("Internal error");
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // 1c. resolveBankAccount
@@ -269,7 +336,7 @@ exports.getEscrowByToken = onRequest(async (req, res) => {
 
 exports.resolveBankAccount = onRequest(
   { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
-  async (req, res) => {
+  withCors(async (req, res) => {
     try {
       if (req.method !== "POST") {
         return res.status(405).send("Method not allowed");
@@ -319,6 +386,191 @@ exports.resolveBankAccount = onRequest(
       logger.error("resolveBankAccount: unexpected error", err);
       return res.status(500).send("Internal error");
     }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// 1d. updateSellerBankAccount
+//     Lets a seller fix their own payout destination any time before an
+//     escrow has released — this only changes WHERE money goes, never
+//     what the buyer agreed to, so it's safe to allow post-creation
+//     (unlike item/price, which are locked once payment is in motion).
+//     Re-validates the new account through Monnify and writes an audit
+//     entry, since this field controls where real money lands.
+// ---------------------------------------------------------------------------
+
+exports.updateSellerBankAccount = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  withCors(async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).send("Method not allowed");
+      }
+
+      const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+      if (!idToken) {
+        return res.status(401).send("Missing auth token");
+      }
+      let decoded;
+      try {
+        decoded = await admin.auth().verifyIdToken(idToken);
+      } catch (err) {
+        return res.status(401).send("Invalid auth token");
+      }
+
+      const { escrowId, accountNumber, bankCode } = req.body || {};
+      if (!escrowId || !accountNumber || !bankCode) {
+        return res.status(400).send("Missing escrowId, accountNumber, or bankCode");
+      }
+
+      const escrowRef = db.collection("escrows").doc(escrowId);
+      const doc = await escrowRef.get();
+      if (!doc.exists) return res.status(404).send("Escrow not found");
+
+      const data = doc.data();
+      if (data.sellerUid !== decoded.uid) return res.status(403).send("Not your escrow");
+      if (data.status === "released") {
+        return res.status(409).send("Can't change payout details after funds have released");
+      }
+
+      // Re-validate against Monnify before saving — same check as at
+      // creation time. Non-fatal if it fails: we still let the seller
+      // update the field, just without the confirmed account name.
+      let accountName = "";
+      try {
+        const accessToken = await getMonnifyAccessToken(
+          MONNIFY_API_KEY.value(),
+          MONNIFY_SECRET_KEY.value()
+        );
+        const validateRes = await fetch(
+          `${MONNIFY_BASE_URL}/api/v1/disbursements/account/validate?` +
+            `accountNumber=${encodeURIComponent(accountNumber)}&bankCode=${encodeURIComponent(bankCode)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const body = await validateRes.json();
+        if (validateRes.ok && body.requestSuccessful) {
+          accountName = body.responseBody?.accountName || "";
+        }
+      } catch (err) {
+        logger.warn("updateSellerBankAccount: Monnify validation failed, saving unverified", err);
+      }
+
+      const oldAccount = data.sellerBankAccount || {};
+
+      await escrowRef.update({
+        sellerBankAccount: { accountNumber, bankCode, accountName },
+      });
+
+      // Worth its own audit entry, separate from the general transaction
+      // log noise — this is the one field edit that changes where money
+      // actually goes.
+      await logTransaction(escrowId, "bank_account_updated", {
+        by: decoded.uid,
+        from: { accountNumber: oldAccount.accountNumber, bankCode: oldAccount.bankCode },
+        to: { accountNumber, bankCode, accountName },
+      });
+
+      return res.status(200).json({ accountName });
+    } catch (err) {
+      logger.error("updateSellerBankAccount: unexpected error", err);
+      return res.status(500).send("Internal error");
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Seller trust stats — sellerStats/{sellerUid}
+// Kept in sync by Firestore triggers rather than manual increments inside
+// every function that can change an escrow's status, so a new code path
+// (or a bug in one) can't silently skip updating the counter.
+// ---------------------------------------------------------------------------
+
+exports.onEscrowCreated = onDocumentCreated(
+  { document: "escrows/{escrowId}", secrets: [RESEND_API_KEY] },
+  async (event) => {
+    const data = event.data?.data();
+    if (!data?.sellerUid) return;
+
+    await db
+      .collection("sellerStats")
+      .doc(data.sellerUid)
+      .set({ totalCount: admin.firestore.FieldValue.increment(1) }, { merge: true });
+
+    if (data.buyerContact?.email) {
+      const naira = `₦${(data.amount / 100).toLocaleString("en-NG")}`;
+      await sendEmail(RESEND_API_KEY.value(), {
+        to: data.buyerContact.email,
+        subject: `An escrow was set up for "${data.itemDesc}"`,
+        html: `<p>A seller has set up a HoldPay escrow for <strong>${data.itemDesc}</strong> (${naira}). Open the payment link they sent you to pay into a protected account — your money stays held until you confirm the item arrived.</p>`,
+      });
+    }
+  }
+);
+
+exports.onEscrowStatusChange = onDocumentUpdated(
+  { document: "escrows/{escrowId}", secrets: [RESEND_API_KEY] },
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after || before.status === after.status) return;
+    if (!after.sellerUid) return;
+
+    const updates = {};
+    if (after.status === "released") {
+      updates.completedCount = admin.firestore.FieldValue.increment(1);
+    }
+    if (after.status === "disputed") {
+      updates.disputedCount = admin.firestore.FieldValue.increment(1);
+    }
+    if (Object.keys(updates).length > 0) {
+      await db.collection("sellerStats").doc(after.sellerUid).set(updates, { merge: true });
+    }
+
+    // Best-effort — a lookup failure here shouldn't stop the stats update above.
+    let sellerEmail = null;
+    try {
+      sellerEmail = (await admin.auth().getUser(after.sellerUid)).email;
+    } catch (err) {
+      logger.warn("onEscrowStatusChange: couldn't look up seller email", err);
+    }
+
+    const buyerEmail = after.buyerContact?.email;
+    const apiKey = RESEND_API_KEY.value();
+    const naira = `₦${(after.amount / 100).toLocaleString("en-NG")}`;
+    const item = after.itemDesc;
+
+    if (after.status === "held") {
+      await sendEmail(apiKey, {
+        to: sellerEmail,
+        subject: `Payment received — "${item}"`,
+        html: `<p>${naira} is now held for <strong>${item}</strong>. Ship the item, then mark it shipped on your HoldPay dashboard.</p>`,
+      });
+    } else if (after.status === "shipped") {
+      await sendEmail(apiKey, {
+        to: buyerEmail,
+        subject: `Your item has shipped — "${item}"`,
+        html: `<p>The seller marked <strong>${item}</strong> as shipped. Confirm receipt on your payment link once it arrives so the seller gets paid — or raise a dispute if something's wrong.</p>`,
+      });
+    } else if (after.status === "released") {
+      await sendEmail(apiKey, {
+        to: buyerEmail,
+        subject: `Funds released — "${item}"`,
+        html: `<p>Funds for <strong>${item}</strong> have been released to the seller. Thanks for using HoldPay.</p>`,
+      });
+      await sendEmail(apiKey, {
+        to: sellerEmail,
+        subject: `You've been paid — "${item}"`,
+        html: `<p>${naira} for <strong>${item}</strong> has been released to your account.</p>`,
+      });
+    } else if (after.status === "disputed") {
+      await sendEmail(apiKey, {
+        to: sellerEmail,
+        subject: `Dispute raised — "${item}"`,
+        html: `<p>The buyer raised a dispute on <strong>${item}</strong>${
+          after.disputeReason ? `: "${after.disputeReason}"` : ""
+        }. This escrow is frozen until it's resolved.</p>`,
+      });
+    }
   }
 );
 
@@ -329,7 +581,7 @@ exports.resolveBankAccount = onRequest(
 //    Single Transfer payout to the seller.
 // ---------------------------------------------------------------------------
 
-exports.releaseFunds = onRequest(async (req, res) => {
+exports.releaseFunds = onRequest(withCors(async (req, res) => {
   try {
     if (req.method !== "POST") {
       return res.status(405).send("Method not allowed");
@@ -394,7 +646,7 @@ exports.releaseFunds = onRequest(async (req, res) => {
     logger.error("releaseFunds: unexpected error", err);
     return res.status(500).send("Internal error");
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // 2b. markShipped
@@ -403,7 +655,7 @@ exports.releaseFunds = onRequest(async (req, res) => {
 //     auto-release deadline.
 // ---------------------------------------------------------------------------
 
-exports.markShipped = onRequest(async (req, res) => {
+exports.markShipped = onRequest(withCors(async (req, res) => {
   try {
     if (req.method !== "POST") {
       return res.status(405).send("Method not allowed");
@@ -467,7 +719,7 @@ exports.markShipped = onRequest(async (req, res) => {
     logger.error("markShipped: unexpected error", err);
     return res.status(500).send("Internal error");
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // 2c. raiseDispute
@@ -476,7 +728,7 @@ exports.markShipped = onRequest(async (req, res) => {
 //     resolves the dispute.
 // ---------------------------------------------------------------------------
 
-exports.raiseDispute = onRequest(async (req, res) => {
+exports.raiseDispute = onRequest(withCors(async (req, res) => {
   try {
     if (req.method !== "POST") {
       return res.status(405).send("Method not allowed");
@@ -519,7 +771,7 @@ exports.raiseDispute = onRequest(async (req, res) => {
     logger.error("raiseDispute: unexpected error", err);
     return res.status(500).send("Internal error");
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // 3. autoReleaseCron
@@ -527,47 +779,83 @@ exports.raiseDispute = onRequest(async (req, res) => {
 //    deadline has passed with no dispute, and auto-releases them.
 // ---------------------------------------------------------------------------
 
-exports.autoReleaseCron = onSchedule("every 24 hours", async () => {
-  // autoReleaseAt is computed per-escrow in markShipped, respecting each
-  // seller's chosen window — so the cron just needs to find anything whose
-  // deadline has already passed, rather than applying one global cutoff.
-  const now = admin.firestore.Timestamp.now();
+exports.autoReleaseCron = onSchedule(
+  { schedule: "every 6 hours", secrets: [RESEND_API_KEY] },
+  async () => {
+    const now = admin.firestore.Timestamp.now();
+    const apiKey = RESEND_API_KEY.value();
 
-  const staleShipped = await db
-    .collection("escrows")
-    .where("status", "==", "shipped")
-    .where("autoReleaseAt", "<=", now)
-    .get();
+    // --- Reminder pass -----------------------------------------------------
+    // Nudge buyers whose auto-release is within 24h and who haven't already
+    // been reminded. reminderSentAt gates this so a 6-hourly cron doesn't
+    // re-send the same reminder 4 times before release actually happens.
+    const reminderCutoff = admin.firestore.Timestamp.fromDate(
+      new Date(Date.now() + 24 * 60 * 60 * 1000)
+    );
+    const dueForReminder = await db
+      .collection("escrows")
+      .where("status", "==", "shipped")
+      .where("autoReleaseAt", "<=", reminderCutoff)
+      .where("reminderSentAt", "==", null)
+      .get();
 
-  if (staleShipped.empty) {
-    logger.info("autoReleaseCron: nothing to release");
-    return;
-  }
+    for (const doc of dueForReminder.docs) {
+      const data = doc.data();
+      try {
+        if (data.buyerContact?.email) {
+          await sendEmail(apiKey, {
+            to: data.buyerContact.email,
+            subject: `Reminder: confirm receipt of "${data.itemDesc}"`,
+            html: `<p>Funds for <strong>${data.itemDesc}</strong> auto-release to the seller soon unless you confirm receipt or raise a dispute first.</p>`,
+          });
+        }
+        await doc.ref.update({ reminderSentAt: admin.firestore.FieldValue.serverTimestamp() });
+      } catch (err) {
+        logger.error(`autoReleaseCron: reminder failed for escrow ${doc.id}`, err);
+      }
+    }
 
-  logger.info(`autoReleaseCron: found ${staleShipped.size} escrow(s) to auto-release`);
+    // --- Release pass --------------------------------------------------
+    // autoReleaseAt is computed per-escrow in markShipped, respecting each
+    // seller's chosen window — so this just finds anything whose deadline
+    // has already passed, rather than applying one global cutoff.
+    const staleShipped = await db
+      .collection("escrows")
+      .where("status", "==", "shipped")
+      .where("autoReleaseAt", "<=", now)
+      .get();
 
-  for (const doc of staleShipped.docs) {
-    const escrowRef = doc.ref;
-    try {
-      await db.runTransaction(async (tx) => {
-        const fresh = await tx.get(escrowRef);
-        const data = fresh.data();
-        if (data.status !== "shipped") return; // guard against race with buyer confirm
+    if (staleShipped.empty) {
+      logger.info("autoReleaseCron: nothing to release");
+      return;
+    }
 
-        tx.update(escrowRef, {
-          status: "released",
-          releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+    logger.info(`autoReleaseCron: found ${staleShipped.size} escrow(s) to auto-release`);
+
+    for (const doc of staleShipped.docs) {
+      const escrowRef = doc.ref;
+      try {
+        await db.runTransaction(async (tx) => {
+          const fresh = await tx.get(escrowRef);
+          const data = fresh.data();
+          if (data.status !== "shipped") return; // guard against race with buyer confirm
+
+          tx.update(escrowRef, {
+            status: "released",
+            releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
         });
-      });
 
-      await logTransaction(doc.id, "auto_released", {
-        reason: "No confirmation within the auto-release window",
-      });
+        await logTransaction(doc.id, "auto_released", {
+          reason: "No confirmation within the auto-release window",
+        });
 
-      // Real Monnify Single Transfer call would go here too, same as releaseFunds.
-      logger.info(`autoReleaseCron: auto-released escrow ${doc.id}`);
-    } catch (err) {
-      logger.error(`autoReleaseCron: failed for escrow ${doc.id}`, err);
+        // Real Monnify Single Transfer call would go here too, same as releaseFunds.
+        // Emails for this transition are handled by onEscrowStatusChange.
+        logger.info(`autoReleaseCron: auto-released escrow ${doc.id}`);
+      } catch (err) {
+        logger.error(`autoReleaseCron: failed for escrow ${doc.id}`, err);
+      }
     }
   }
-});
+);

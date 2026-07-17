@@ -1,9 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db, FUNCTIONS_BASE_URL } from "../lib/firebase";
+import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, storage, FUNCTIONS_BASE_URL } from "../lib/firebase";
 import { useAuth } from "../lib/AuthContext";
 import SellerNav from "../components/SellerNav";
 import AppSidebar from "../components/AppSidebar";
+// npm install qrcode.react
+import { QRCodeSVG } from "qrcode.react";
+
+// Resizes/recompresses client-side before upload — phone-camera photos are
+// often 3-8MB, which is a real cost/speed problem on the mobile data most
+// buyers and sellers here are on. 1200px is plenty for a trust photo.
+async function compressImage(file, maxWidth = 1200, quality = 0.8) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
 
 function generateRef() {
   return "HP-" + crypto.randomUUID().slice(0, 8).toUpperCase();
@@ -24,12 +40,24 @@ export default function CreateEscrow() {
   const [itemDesc, setItemDesc] = useState("");
   const [amountNaira, setAmountNaira] = useState("");
   const [buyerPhone, setBuyerPhone] = useState("");
+  const [buyerEmail, setBuyerEmail] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
   const [autoReleaseDays, setAutoReleaseDays] = useState(String(DEFAULT_RELEASE_DAYS));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null);
+  const [showQR, setShowQR] = useState(false);
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
+  function handlePhotoChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoFile(file);
+    setPhotoPreviewUrl(URL.createObjectURL(file));
+  }
 
   // Bank account resolve — debounced so it fires ~500ms after the seller
   // stops typing in either field, not on every keystroke.
@@ -110,10 +138,36 @@ export default function CreateEscrow() {
       const confirmToken = crypto.randomUUID();
       const reservedAccountRef = generateRef();
 
-      const docRef = await addDoc(collection(db, "escrows"), {
+      // Pre-generate the doc reference so we know the escrow ID before
+      // writing — needed because the photo path is keyed on escrowId, and
+      // escrows can't be updated after creation (create-then-locked, per
+      // your Firestore rules), so the photo URL has to be known upfront.
+      const escrowRef = doc(collection(db, "escrows"));
+
+      let photoUrl = null;
+      if (photoFile) {
+        setUploadingPhoto(true);
+        try {
+          const compressed = await compressImage(photoFile);
+          const path = `sellers/${user.uid}/escrows/${escrowRef.id}/photo.jpg`;
+          await uploadBytes(storageRef(storage, path), compressed, {
+            contentType: "image/jpeg",
+          });
+          photoUrl = await getDownloadURL(storageRef(storage, path));
+        } catch (err) {
+          console.error(err);
+          // Non-fatal — the escrow still gets created without a photo
+          // rather than blocking the seller over an upload hiccup.
+        } finally {
+          setUploadingPhoto(false);
+        }
+      }
+
+      await setDoc(escrowRef, {
         status: "pending_payment",
         amount: Math.round(parseFloat(amountNaira) * 100),
         itemDesc: itemDesc.trim(),
+        photoUrl,
         sellerUid: user.uid,
         sellerBankAccount: {
           accountNumber: accountNumber.trim(),
@@ -123,7 +177,7 @@ export default function CreateEscrow() {
           accountName: resolvedName || "",
         },
         buyerContact: {
-          email: "",
+          email: buyerEmail.trim(),
           phone: buyerPhone.trim(),
         },
         buyerConfirmToken: confirmToken,
@@ -137,6 +191,7 @@ export default function CreateEscrow() {
         paidAt: null,
         shippedAt: null,
         autoReleaseAt: null,
+        reminderSentAt: null,
         confirmedAt: null,
         releasedAt: null,
         disputedAt: null,
@@ -144,7 +199,7 @@ export default function CreateEscrow() {
       });
 
       const buyerLink = `${window.location.origin}/pay/${confirmToken}`;
-      setCreated({ escrowId: docRef.id, buyerLink });
+      setCreated({ escrowId: escrowRef.id, buyerLink });
     } catch (err) {
       console.error(err);
       setError("Couldn't create the escrow. Check your connection and try again.");
@@ -176,6 +231,20 @@ export default function CreateEscrow() {
             >
               Copy link
             </button>
+            <button
+              className="btn btn-ghost"
+              style={{ marginTop: 10 }}
+              onClick={() => setShowQR((v) => !v)}
+            >
+              {showQR ? "Hide QR code" : "Show QR code"}
+            </button>
+            {showQR && (
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
+                <div style={{ background: "white", padding: 16, borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                  <QRCodeSVG value={created.buyerLink} size={180} fgColor="#1b1f3b" level="M" />
+                </div>
+              </div>
+            )}
           </div>
           <button className="btn btn-ghost" onClick={() => setCreated(null)}>
             Create another
@@ -230,6 +299,26 @@ export default function CreateEscrow() {
                 />
                 <div className="hint">Used to send the buyer their payment link.</div>
               </div>
+              <div className="field">
+                <label>Buyer's email (optional)</label>
+                <input
+                  type="email"
+                  value={buyerEmail}
+                  onChange={(e) => setBuyerEmail(e.target.value)}
+                  placeholder="buyer@example.com"
+                />
+                <div className="hint">
+                  If given, they'll get email updates when the item ships and when funds release.
+                </div>
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Photo (optional)</label>
+                <input type="file" accept="image/*" onChange={handlePhotoChange} />
+                <div className="hint">
+                  One photo of the item — meaningfully raises trust for a buyer paying a
+                  stranger upfront. Resized automatically before upload.
+                </div>
+              </div>
             </div>
 
             <div className="card">
@@ -281,7 +370,7 @@ export default function CreateEscrow() {
             </div>
 
             <button className="btn btn-primary" type="submit" disabled={submitting}>
-              {submitting ? "Creating…" : "Create escrow & get payment link"}
+              {uploadingPhoto ? "Uploading photo…" : submitting ? "Creating…" : "Create escrow & get payment link"}
             </button>
           </form>
 
@@ -292,6 +381,19 @@ export default function CreateEscrow() {
               <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
                 What your buyer will see
               </div>
+              {photoPreviewUrl && (
+                <img
+                  src={photoPreviewUrl}
+                  alt="Item preview"
+                  style={{
+                    width: "100%",
+                    aspectRatio: "4 / 3",
+                    objectFit: "cover",
+                    borderRadius: "var(--radius-sm)",
+                    marginBottom: 12,
+                  }}
+                />
+              )}
               <span className="seal seal-pending">
                 <span className="dot" />
                 Awaiting payment
