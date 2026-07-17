@@ -275,7 +275,7 @@ export default function CreateEscrow() {
                 <textarea
                   value={itemDesc}
                   onChange={(e) => setItemDesc(e.target.value)}
-                  placeholder="e.g. iPhone 13 Pro Max, 256GB, UK used"
+                  // placeholder="e.g. iPhone 13 Pro Max, 256GB, UK used"
                 />
               </div>
               <div className="field">
@@ -286,7 +286,7 @@ export default function CreateEscrow() {
                   step="1"
                   value={amountNaira}
                   onChange={(e) => setAmountNaira(e.target.value)}
-                  placeholder="45000"
+                  // placeholder="45000"
                 />
               </div>
               <div className="field">
@@ -295,7 +295,7 @@ export default function CreateEscrow() {
                   type="tel"
                   value={buyerPhone}
                   onChange={(e) => setBuyerPhone(e.target.value)}
-                  placeholder="0801 234 5678"
+                  // placeholder="0801 234 5678"
                 />
                 <div className="hint">Used to send the buyer their payment link.</div>
               </div>
@@ -305,7 +305,7 @@ export default function CreateEscrow() {
                   type="email"
                   value={buyerEmail}
                   onChange={(e) => setBuyerEmail(e.target.value)}
-                  placeholder="buyer@example.com"
+                  // placeholder="buyer@example.com"
                 />
                 <div className="hint">
                   If given, they'll get email updates when the item ships and when funds release.
@@ -328,7 +328,7 @@ export default function CreateEscrow() {
                 <input
                   value={accountNumber}
                   onChange={(e) => setAccountNumber(e.target.value)}
-                  placeholder="0123456789"
+                  // placeholder="0123456789"
                 />
               </div>
               <div className="field">
@@ -336,7 +336,7 @@ export default function CreateEscrow() {
                 <input
                   value={bankCode}
                   onChange={(e) => setBankCode(e.target.value)}
-                  placeholder="058 (GTBank)"
+                  //placeholder="058 (GTBank)"
                 />
                 <div className="hint">Swap this for a bank-name dropdown before demo day.</div>
               </div>
