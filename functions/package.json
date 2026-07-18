@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "test:webhook": "node --env-file=.env scripts/test-webhook.js",
+    "test:release": "node --env-file=.env scripts/test-release.js"
   },
   "dependencies": {
     "firebase-admin": "^12.0.0",
