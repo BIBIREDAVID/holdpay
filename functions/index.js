@@ -616,6 +616,76 @@ exports.releaseFunds = onRequest(withCors(async (req, res) => {
 //     auto-release deadline.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TEMPORARY — simulatePayment
+//     Stands in for monnifyWebhook while real Monnify sandbox credentials
+//     aren't available yet. Does exactly what the real webhook does (moves
+//     pending_payment -> held, sets paidAt) but triggered by the seller
+//     instead of an actual bank transfer. Clearly logged as simulated so
+//     it's never mistaken for a real payment in the audit trail.
+//
+//     SECURITY NOTE: once real Monnify integration is live, this should be
+//     removed or locked behind a flag — a seller being able to self-mark
+//     "paid" is harmless right now only because releaseFunds' actual
+//     disbursement call is still mocked too. Once real transfers are
+//     wired up, this function becomes a real risk and needs to go.
+// ---------------------------------------------------------------------------
+
+exports.simulatePayment = onRequest(withCors(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).send("Method not allowed");
+    }
+
+    const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+    if (!idToken) return res.status(401).send("Missing auth token");
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch (err) {
+      return res.status(401).send("Invalid auth token");
+    }
+
+    const { escrowId } = req.body || {};
+    if (!escrowId) return res.status(400).send("Missing escrowId");
+
+    const escrowRef = db.collection("escrows").doc(escrowId);
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(escrowRef);
+      if (!snap.exists) return { error: "not_found" };
+      const data = snap.data();
+
+      if (data.sellerUid !== decoded.uid) return { error: "forbidden" };
+      if (data.status !== "pending_payment") {
+        return { error: "invalid_state", currentStatus: data.status };
+      }
+
+      tx.update(escrowRef, {
+        status: "held",
+        paidAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return { ok: true };
+    });
+
+    if (result.error === "not_found") return res.status(404).send("Escrow not found");
+    if (result.error === "forbidden") return res.status(403).send("Not your escrow");
+    if (result.error === "invalid_state") {
+      return res.status(409).send(`Escrow is already ${result.currentStatus}`);
+    }
+
+    await logTransaction(escrowId, "payment_simulated", {
+      by: decoded.uid,
+      note: "Manually marked paid — no real payment occurred. Stand-in for monnifyWebhook.",
+    });
+
+    return res.status(200).json({ status: "held" });
+  } catch (err) {
+    logger.error("simulatePayment: unexpected error", err);
+    return res.status(500).send("Internal error");
+  }
+}));
+
 exports.markShipped = onRequest(withCors(async (req, res) => {
   try {
     if (req.method !== "POST") {
