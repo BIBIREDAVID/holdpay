@@ -14,12 +14,20 @@ const db = admin.firestore();
 // Store the real values with:
 //   firebase functions:secrets:set MONNIFY_SECRET_KEY
 //   firebase functions:secrets:set MONNIFY_API_KEY
+// MONNIFY_CONTRACT_CODE and MONNIFY_SOURCE_ACCOUNT_NUMBER go in
+// functions/.env instead (see the template) — they're identifiers, not credentials.
 const MONNIFY_SECRET_KEY = defineSecret("MONNIFY_SECRET_KEY");
 const MONNIFY_API_KEY = defineSecret("MONNIFY_API_KEY");
+// Your merchant contract code and disbursement wallet account number are
+// identifiers, not credentials — loaded as plain env vars from
+// functions/.env (Functions v2 loads this automatically), not Secret
+// Manager. Set the real values in functions/.env before deploying.
+const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE;
+const MONNIFY_SOURCE_ACCOUNT_NUMBER = process.env.MONNIFY_SOURCE_ACCOUNT_NUMBER;
 // firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 
-// Sandbox for now — swap to https://api.monnify.com once you go live.
+// Sandbox for now — swap to https://api.monnify.com once you go fully live.
 const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
 
 // Fallback only. Each escrow can now set its own `autoReleaseDays` at
@@ -87,8 +95,6 @@ async function sendEmail(apiKey, { to, subject, html }) {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      // "from" needs a domain verified in your Resend dashboard — swap this
-      // for whatever you already set up for NACOS.
       body: JSON.stringify({ from: "HoldPay <notifications@holdpay.app>", to, subject, html }),
     });
     if (!res.ok) {
@@ -130,10 +136,100 @@ async function getMonnifyAccessToken(apiKey, secretKey) {
   }
 
   cachedMonnifyToken = token;
-  // Refresh a little early so we never hand out a token that's about to expire.
   cachedMonnifyTokenExpiry = Date.now() + (expiresIn - 60) * 1000;
 
   return token;
+}
+
+// ---------------------------------------------------------------------------
+// createMonnifyReservedAccount
+// Called right after an escrow doc is created (see onEscrowCreated below).
+// Creates a dedicated virtual account for THIS escrow specifically — the
+// accountReference is the escrow's own ID, so payment webhooks can match
+// straight back to it via monnify.reservedAccountRef.
+// ---------------------------------------------------------------------------
+
+async function createMonnifyReservedAccount(accessToken, contractCode, {
+  accountReference,
+  accountName,
+  customerEmail,
+  customerName,
+}) {
+  const res = await fetch(`${MONNIFY_BASE_URL}/api/v2/bank-transfer/reserved-accounts`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      accountReference,
+      accountName,
+      currencyCode: "NGN",
+      contractCode,
+      customerEmail: customerEmail || "buyer@holdpay.app",
+      customerName: customerName || accountName,
+      getAllAvailableBanks: false, // single dedicated bank keeps the UI simple
+    }),
+  });
+
+  const body = await res.json();
+  if (!res.ok || !body.requestSuccessful) {
+    throw new Error(body.responseMessage || `Monnify reserved account creation failed: ${res.status}`);
+  }
+
+  const account = body.responseBody?.accounts?.[0];
+  if (!account) {
+    throw new Error("Monnify reserved account response missing account details");
+  }
+
+  return {
+    accountNumber: account.accountNumber,
+    bankName: account.bankName,
+    bankCode: account.bankCode,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// transferToSeller
+// Real Monnify Single Transfer (disbursement) call — pays the seller's bank
+// account from your Monnify wallet. Used by both releaseFunds (buyer-
+// triggered) and autoReleaseCron (time-triggered).
+// ---------------------------------------------------------------------------
+
+async function transferToSeller(accessToken, sourceAccountNumber, {
+  amountNaira,
+  reference,
+  narration,
+  destinationAccountNumber,
+  destinationBankCode,
+}) {
+  const res = await fetch(`${MONNIFY_BASE_URL}/api/v2/disbursements/single`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      amount: amountNaira,
+      reference,
+      narration,
+      destinationBankCode,
+      destinationAccountNumber,
+      currency: "NGN",
+      sourceAccountNumber,
+    }),
+  });
+
+  const body = await res.json();
+  if (!res.ok || !body.requestSuccessful) {
+    throw new Error(body.responseMessage || `Monnify transfer failed: ${res.status}`);
+  }
+
+  return {
+    transactionReference: body.responseBody?.reference || reference,
+    status: body.responseBody?.status || "UNKNOWN",
+    monnifyResponse: body.responseBody,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,9 +259,6 @@ exports.monnifyWebhook = onRequest(
 
       const event = req.body;
 
-      // Only care about successful reserved-account payment events.
-      // Monnify's actual event name may differ slightly by product config —
-      // confirm against your sandbox dashboard's webhook payload sample.
       if (event.eventType !== "SUCCESSFUL_TRANSACTION") {
         logger.info(`monnifyWebhook: ignoring event type ${event.eventType}`);
         return res.status(200).send("Ignored");
@@ -194,9 +287,6 @@ exports.monnifyWebhook = onRequest(
       const escrowDoc = matchQuery.docs[0];
       const escrowRef = escrowDoc.ref;
 
-      // Transaction guarantees idempotency: if this fires twice (Monnify
-      // retries on any non-200), the second run sees status != pending_payment
-      // and no-ops instead of double-crediting.
       const result = await db.runTransaction(async (tx) => {
         const freshDoc = await tx.get(escrowRef);
         const data = freshDoc.data();
@@ -207,7 +297,6 @@ exports.monnifyWebhook = onRequest(
 
         const expectedAmountNaira = data.amount / 100;
         if (Math.abs(expectedAmountNaira - amountPaidNaira) > 1) {
-          // Amount mismatch — flag instead of silently accepting a short/over payment.
           tx.update(escrowRef, {
             status: "disputed",
             disputedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -236,8 +325,6 @@ exports.monnifyWebhook = onRequest(
         logger.info(`monnifyWebhook: escrow ${escrowDoc.id} moved to held`);
       }
 
-      // Always 200 once we've validly processed (or safely ignored) the event —
-      // Monnify will keep retrying on non-2xx responses.
       return res.status(200).send("OK");
     } catch (err) {
       logger.error("monnifyWebhook: unexpected error", err);
@@ -248,9 +335,6 @@ exports.monnifyWebhook = onRequest(
 
 // ---------------------------------------------------------------------------
 // 1b. getEscrowByToken
-//     Lets the unauthenticated buyer page look up escrow status/details
-//     using only the token from their confirm link — never exposes other
-//     escrows since Firestore rules block direct client reads.
 // ---------------------------------------------------------------------------
 
 exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
@@ -273,11 +357,6 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
     const doc = match.docs[0];
     const data = doc.data();
 
-    // Trust stats are a separate lookup, not embedded on the escrow doc —
-    // sellerStats/{uid} is a running counter kept in sync by the
-    // onEscrowStatusChange trigger below, so this stays a single cheap
-    // doc read rather than counting the seller's whole escrow history
-    // on every buyer page load.
     let sellerStats = { completedCount: 0, disputedCount: 0 };
     if (data.sellerUid) {
       const statsDoc = await db.collection("sellerStats").doc(data.sellerUid).get();
@@ -290,8 +369,6 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
       }
     }
 
-    // Only return fields the buyer actually needs — never leak seller bank
-    // details or the token itself back out.
     return res.status(200).json({
       escrowId: doc.id,
       status: data.status,
@@ -307,9 +384,6 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
         : null,
       paidAt: data.paidAt || null,
       shippedAt: data.shippedAt || null,
-      // Sent as epoch millis, not the raw Firestore Timestamp — plain JSON
-      // has no Timestamp type, so the client would otherwise receive an
-      // opaque {seconds, nanoseconds} object with no .toDate().
       autoReleaseAt: data.autoReleaseAt ? data.autoReleaseAt.toMillis() : null,
       autoReleaseDays: Number.isFinite(data.autoReleaseDays)
         ? data.autoReleaseDays
@@ -325,7 +399,7 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
-// 1b. getBanks
+// 1c. getBanks
 //     Powers a real bank-name dropdown on the create form instead of a raw
 //     code text input — pulls the live list from Monnify rather than a
 //     hardcoded array, so codes can't drift out of sync with what Monnify
@@ -375,13 +449,7 @@ exports.getBanks = onRequest(
 );
 
 // ---------------------------------------------------------------------------
-// 1c. resolveBankAccount
-//     Called from the seller's form (debounced, on blur of the account
-//     fields) to confirm the account name tied to an account number + bank
-//     code BEFORE it's saved as the payout destination. Uses Monnify's
-//     free Name Enquiry API (available on sandbox and live). Requires the
-//     seller to be authenticated — this is a paid-adjacent lookup, not a
-//     public endpoint.
+// 1d. resolveBankAccount
 // ---------------------------------------------------------------------------
 
 exports.resolveBankAccount = onRequest(
@@ -440,15 +508,93 @@ exports.resolveBankAccount = onRequest(
 );
 
 // ---------------------------------------------------------------------------
-// Seller trust stats — sellerStats/{sellerUid}
-// Kept in sync by Firestore triggers rather than manual increments inside
-// every function that can change an escrow's status, so a new code path
-// (or a bug in one) can't silently skip updating the counter.
+// 1d. updateSellerBankAccount
+// ---------------------------------------------------------------------------
+
+exports.updateSellerBankAccount = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  withCors(async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).send("Method not allowed");
+      }
+
+      const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+      if (!idToken) {
+        return res.status(401).send("Missing auth token");
+      }
+      let decoded;
+      try {
+        decoded = await admin.auth().verifyIdToken(idToken);
+      } catch (err) {
+        return res.status(401).send("Invalid auth token");
+      }
+
+      const { escrowId, accountNumber, bankCode } = req.body || {};
+      if (!escrowId || !accountNumber || !bankCode) {
+        return res.status(400).send("Missing escrowId, accountNumber, or bankCode");
+      }
+
+      const escrowRef = db.collection("escrows").doc(escrowId);
+      const doc = await escrowRef.get();
+      if (!doc.exists) return res.status(404).send("Escrow not found");
+
+      const data = doc.data();
+      if (data.sellerUid !== decoded.uid) return res.status(403).send("Not your escrow");
+      if (data.status === "released") {
+        return res.status(409).send("Can't change payout details after funds have released");
+      }
+
+      let accountName = "";
+      try {
+        const accessToken = await getMonnifyAccessToken(
+          MONNIFY_API_KEY.value(),
+          MONNIFY_SECRET_KEY.value()
+        );
+        const validateRes = await fetch(
+          `${MONNIFY_BASE_URL}/api/v1/disbursements/account/validate?` +
+            `accountNumber=${encodeURIComponent(accountNumber)}&bankCode=${encodeURIComponent(bankCode)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const body = await validateRes.json();
+        if (validateRes.ok && body.requestSuccessful) {
+          accountName = body.responseBody?.accountName || "";
+        }
+      } catch (err) {
+        logger.warn("updateSellerBankAccount: Monnify validation failed, saving unverified", err);
+      }
+
+      const oldAccount = data.sellerBankAccount || {};
+
+      await escrowRef.update({
+        sellerBankAccount: { accountNumber, bankCode, accountName },
+      });
+
+      await logTransaction(escrowId, "bank_account_updated", {
+        by: decoded.uid,
+        from: { accountNumber: oldAccount.accountNumber, bankCode: oldAccount.bankCode },
+        to: { accountNumber, bankCode, accountName },
+      });
+
+      return res.status(200).json({ accountName });
+    } catch (err) {
+      logger.error("updateSellerBankAccount: unexpected error", err);
+      return res.status(500).send("Internal error");
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Seller trust stats + reserved account creation — escrows/{escrowId} triggers
 // ---------------------------------------------------------------------------
 
 exports.onEscrowCreated = onDocumentCreated(
-  { document: "escrows/{escrowId}", secrets: [RESEND_API_KEY] },
+  {
+    document: "escrows/{escrowId}",
+    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
+  },
   async (event) => {
+    const escrowId = event.params.escrowId;
     const data = event.data?.data();
     if (!data?.sellerUid) return;
 
@@ -456,6 +602,46 @@ exports.onEscrowCreated = onDocumentCreated(
       .collection("sellerStats")
       .doc(data.sellerUid)
       .set({ totalCount: admin.firestore.FieldValue.increment(1) }, { merge: true });
+
+    // --- Real Monnify Reserved Account creation ---
+    // Only runs if this escrow doesn't already have a real account number
+    // (guards against double-creating if this trigger somehow re-runs).
+    if (data.monnify?.reservedAccountNumber === "PENDING" || !data.monnify?.reservedAccountNumber) {
+      try {
+        const accessToken = await getMonnifyAccessToken(
+          MONNIFY_API_KEY.value(),
+          MONNIFY_SECRET_KEY.value()
+        );
+
+        const account = await createMonnifyReservedAccount(
+          accessToken,
+          MONNIFY_CONTRACT_CODE,
+          {
+            accountReference: escrowId,
+            accountName: `HoldPay - ${data.itemDesc}`.slice(0, 100),
+            customerEmail: data.buyerContact?.email,
+            customerName: data.buyerContact?.phone || "HoldPay Buyer",
+          }
+        );
+
+        await event.data.ref.update({
+          "monnify.reservedAccountNumber": account.accountNumber,
+          "monnify.bankName": account.bankName,
+          "monnify.bankCode": account.bankCode,
+        });
+
+        await logTransaction(escrowId, "reserved_account_created", { account });
+        logger.info(`onEscrowCreated: reserved account created for escrow ${escrowId}`);
+      } catch (err) {
+        // Don't let a Monnify outage silently strand the escrow — flag it
+        // so you notice in the dashboard/logs rather than a buyer hitting
+        // a broken "PENDING" account number on their payment page.
+        logger.error(`onEscrowCreated: reserved account creation failed for ${escrowId}`, err);
+        await logTransaction(escrowId, "reserved_account_creation_failed", {
+          error: err.message,
+        });
+      }
+    }
 
     if (data.buyerContact?.email) {
       const naira = `₦${(data.amount / 100).toLocaleString("en-NG")}`;
@@ -487,7 +673,6 @@ exports.onEscrowStatusChange = onDocumentUpdated(
       await db.collection("sellerStats").doc(after.sellerUid).set(updates, { merge: true });
     }
 
-    // Best-effort — a lookup failure here shouldn't stop the stats update above.
     let sellerEmail = null;
     try {
       sellerEmail = (await admin.auth().getUser(after.sellerUid)).email;
@@ -538,153 +723,112 @@ exports.onEscrowStatusChange = onDocumentUpdated(
 // ---------------------------------------------------------------------------
 // 2. releaseFunds
 //    Called from the buyer's confirmation link. Validates the token,
-//    transitions held/shipped -> released, and (mock) triggers a Monnify
+//    transitions held/shipped -> released, and triggers a real Monnify
 //    Single Transfer payout to the seller.
 // ---------------------------------------------------------------------------
 
-exports.releaseFunds = onRequest(withCors(async (req, res) => {
-  try {
-    if (req.method !== "POST") {
-      return res.status(405).send("Method not allowed");
-    }
-
-    const { escrowId, token } = req.body || {};
-    if (!escrowId || !token) {
-      return res.status(400).send("Missing escrowId or token");
-    }
-
-    const escrowRef = db.collection("escrows").doc(escrowId);
-
-    const result = await db.runTransaction(async (tx) => {
-      const doc = await tx.get(escrowRef);
-      if (!doc.exists) {
-        return { error: "not_found" };
-      }
-      const data = doc.data();
-
-      if (data.buyerConfirmToken !== token) {
-        return { error: "invalid_token" };
+exports.releaseFunds = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  withCors(async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).send("Method not allowed");
       }
 
-      if (!["held", "shipped"].includes(data.status)) {
-        return { error: "invalid_state", currentStatus: data.status };
+      const { escrowId, token } = req.body || {};
+      if (!escrowId || !token) {
+        return res.status(400).send("Missing escrowId or token");
       }
 
-      tx.update(escrowRef, {
-        status: "released",
-        confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
-        releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+      const escrowRef = db.collection("escrows").doc(escrowId);
+
+      const result = await db.runTransaction(async (tx) => {
+        const doc = await tx.get(escrowRef);
+        if (!doc.exists) {
+          return { error: "not_found" };
+        }
+        const data = doc.data();
+
+        if (data.buyerConfirmToken !== token) {
+          return { error: "invalid_token" };
+        }
+
+        if (!["held", "shipped"].includes(data.status)) {
+          return { error: "invalid_state", currentStatus: data.status };
+        }
+
+        // Mark released now, inside the transaction, so a retry/double-click
+        // can't trigger two transfers — the Monnify call happens after,
+        // gated on this transaction having succeeded first.
+        tx.update(escrowRef, {
+          status: "released",
+          confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+          releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        return {
+          success: true,
+          sellerBankAccount: data.sellerBankAccount,
+          amount: data.amount,
+          itemDesc: data.itemDesc,
+        };
       });
 
-      return { success: true, sellerBankAccount: data.sellerBankAccount, amount: data.amount };
-    });
+      if (result.error === "not_found") return res.status(404).send("Escrow not found");
+      if (result.error === "invalid_token") return res.status(403).send("Invalid confirmation token");
+      if (result.error === "invalid_state") {
+        return res.status(409).send(`Cannot release from status: ${result.currentStatus}`);
+      }
 
-    if (result.error === "not_found") return res.status(404).send("Escrow not found");
-    if (result.error === "invalid_token") return res.status(403).send("Invalid confirmation token");
-    if (result.error === "invalid_state") {
-      return res.status(409).send(`Cannot release from status: ${result.currentStatus}`);
+      try {
+        const accessToken = await getMonnifyAccessToken(
+          MONNIFY_API_KEY.value(),
+          MONNIFY_SECRET_KEY.value()
+        );
+
+        const transfer = await transferToSeller(
+          accessToken,
+          MONNIFY_SOURCE_ACCOUNT_NUMBER,
+          {
+            amountNaira: result.amount / 100,
+            reference: `HP-RELEASE-${escrowId}-${Date.now()}`,
+            narration: `HoldPay payout: ${result.itemDesc}`.slice(0, 100),
+            destinationAccountNumber: result.sellerBankAccount.accountNumber,
+            destinationBankCode: result.sellerBankAccount.bankCode,
+          }
+        );
+
+        await logTransaction(escrowId, "transfer_initiated", {
+          amount: result.amount,
+          sellerBankAccount: result.sellerBankAccount,
+          transferResponse: transfer,
+        });
+
+        logger.info(`releaseFunds: escrow ${escrowId} released, transfer ${transfer.transactionReference}`);
+        return res.status(200).json({ status: "released", transfer });
+      } catch (transferErr) {
+        // Status is already "released" in Firestore at this point — the
+        // escrow itself succeeded from the buyer's perspective. A failed
+        // transfer here needs manual follow-up (retry the payout), not a
+        // rollback of the confirmation, since the buyer already confirmed
+        // receipt of a real item.
+        logger.error(`releaseFunds: transfer failed for escrow ${escrowId}`, transferErr);
+        await logTransaction(escrowId, "transfer_failed", { error: transferErr.message });
+        return res.status(200).json({
+          status: "released",
+          transfer: { status: "FAILED", note: "Payout failed — needs manual retry. Escrow status is still released." },
+        });
+      }
+    } catch (err) {
+      logger.error("releaseFunds: unexpected error", err);
+      return res.status(500).send("Internal error");
     }
-
-    // --- Monnify Single Transfer call goes here ---
-    // Mocked until you have sandbox disbursement credentials wired up.
-    // Real call: POST https://sandbox.monnify.com/api/v2/disbursements/single
-    // with sellerBankAccount + amount, using an OAuth bearer token.
-    const mockTransferResponse = {
-      transactionReference: `MOCK-${crypto.randomUUID()}`,
-      status: "SUCCESS",
-      note: "Mocked — replace with real Monnify Single Transfer call once sandbox disbursement access is granted",
-    };
-
-    await logTransaction(escrowId, "transfer_initiated", {
-      amount: result.amount,
-      sellerBankAccount: result.sellerBankAccount,
-      transferResponse: mockTransferResponse,
-    });
-
-    logger.info(`releaseFunds: escrow ${escrowId} released (mock transfer)`);
-    return res.status(200).json({ status: "released", transfer: mockTransferResponse });
-  } catch (err) {
-    logger.error("releaseFunds: unexpected error", err);
-    return res.status(500).send("Internal error");
-  }
-}));
+  })
+);
 
 // ---------------------------------------------------------------------------
 // 2b. markShipped
-//     Called by the authenticated seller from their dashboard. Verifies
-//     they own the escrow, then transitions held -> shipped and sets the
-//     auto-release deadline.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// TEMPORARY — simulatePayment
-//     Stands in for monnifyWebhook while real Monnify sandbox credentials
-//     aren't available yet. Does exactly what the real webhook does (moves
-//     pending_payment -> held, sets paidAt) but triggered by the seller
-//     instead of an actual bank transfer. Clearly logged as simulated so
-//     it's never mistaken for a real payment in the audit trail.
-//
-//     SECURITY NOTE: once real Monnify integration is live, this should be
-//     removed or locked behind a flag — a seller being able to self-mark
-//     "paid" is harmless right now only because releaseFunds' actual
-//     disbursement call is still mocked too. Once real transfers are
-//     wired up, this function becomes a real risk and needs to go.
-// ---------------------------------------------------------------------------
-
-exports.simulatePayment = onRequest(withCors(async (req, res) => {
-  try {
-    if (req.method !== "POST") {
-      return res.status(405).send("Method not allowed");
-    }
-
-    const idToken = (req.headers.authorization || "").replace("Bearer ", "");
-    if (!idToken) return res.status(401).send("Missing auth token");
-    let decoded;
-    try {
-      decoded = await admin.auth().verifyIdToken(idToken);
-    } catch (err) {
-      return res.status(401).send("Invalid auth token");
-    }
-
-    const { escrowId } = req.body || {};
-    if (!escrowId) return res.status(400).send("Missing escrowId");
-
-    const escrowRef = db.collection("escrows").doc(escrowId);
-
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(escrowRef);
-      if (!snap.exists) return { error: "not_found" };
-      const data = snap.data();
-
-      if (data.sellerUid !== decoded.uid) return { error: "forbidden" };
-      if (data.status !== "pending_payment") {
-        return { error: "invalid_state", currentStatus: data.status };
-      }
-
-      tx.update(escrowRef, {
-        status: "held",
-        paidAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return { ok: true };
-    });
-
-    if (result.error === "not_found") return res.status(404).send("Escrow not found");
-    if (result.error === "forbidden") return res.status(403).send("Not your escrow");
-    if (result.error === "invalid_state") {
-      return res.status(409).send(`Escrow is already ${result.currentStatus}`);
-    }
-
-    await logTransaction(escrowId, "payment_simulated", {
-      by: decoded.uid,
-      note: "Manually marked paid — no real payment occurred. Stand-in for monnifyWebhook.",
-    });
-
-    return res.status(200).json({ status: "held" });
-  } catch (err) {
-    logger.error("simulatePayment: unexpected error", err);
-    return res.status(500).send("Internal error");
-  }
-}));
 
 exports.markShipped = onRequest(withCors(async (req, res) => {
   try {
@@ -719,8 +863,6 @@ exports.markShipped = onRequest(withCors(async (req, res) => {
       if (data.sellerUid !== decoded.uid) return { error: "forbidden" };
       if (data.status !== "held") return { error: "invalid_state", currentStatus: data.status };
 
-      // Each escrow can set its own window at creation time; fall back to
-      // the default for older escrows that predate the field.
       const autoReleaseDays = Number.isFinite(data.autoReleaseDays)
         ? data.autoReleaseDays
         : DEFAULT_AUTO_RELEASE_DAYS;
@@ -754,9 +896,6 @@ exports.markShipped = onRequest(withCors(async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // 2c. raiseDispute
-//     Called by the buyer from their payment page when something's wrong.
-//     Freezes the escrow so autoReleaseCron won't sweep it while a human
-//     resolves the dispute.
 // ---------------------------------------------------------------------------
 
 exports.raiseDispute = onRequest(withCors(async (req, res) => {
@@ -805,21 +944,271 @@ exports.raiseDispute = onRequest(withCors(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// Admin gating
+// Hardcoded allow-list rather than a Firestore role field — simplest thing
+// that's actually safe for a hackathon timeline. Add your own email(s)
+// here before deploying. Checked against the verified Firebase Auth token,
+// not anything the client can spoof.
+// ---------------------------------------------------------------------------
+
+const ADMIN_EMAILS = [
+  "davidbibiresanmi@gmail.com",
+  // add teammates' emails here
+];
+
+async function requireAdmin(req) {
+  const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+  if (!idToken) throw { status: 401, message: "Missing auth token" };
+
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (err) {
+    throw { status: 401, message: "Invalid auth token" };
+  }
+
+  if (!decoded.email || !ADMIN_EMAILS.includes(decoded.email)) {
+    throw { status: 403, message: "Not authorized" };
+  }
+
+  return decoded;
+}
+
+// ---------------------------------------------------------------------------
+// getEscrowTimeline
+//     Surfaces the transactions/ audit log for one escrow, safe for either
+//     the buyer (via their token) or the seller (via auth) to view. Never
+//     returns raw payloads (webhook bodies, bank details) — only a short,
+//     human-readable label per event, generated server-side so nothing
+//     sensitive leaks through regardless of what's stored internally.
+// ---------------------------------------------------------------------------
+
+function describeTransactionEvent(type) {
+  const labels = {
+    created: "Escrow created",
+    reserved_account_created: "Payment account ready",
+    reserved_account_creation_failed: "Payment account setup delayed",
+    payment_webhook: "Payment received",
+    shipped: "Item marked as shipped",
+    disputed: "Dispute raised",
+    dispute_resolved: "Dispute resolved",
+    transfer_initiated: "Payout sent to seller",
+    transfer_failed: "Payout attempt failed — retrying",
+    auto_released: "Funds auto-released (no confirmation in time)",
+    bank_account_updated: "Seller updated payout details",
+  };
+  return labels[type] || type;
+}
+
+exports.getEscrowTimeline = onRequest(withCors(async (req, res) => {
+  try {
+    const { escrowId, token } = req.query;
+    if (!escrowId) return res.status(400).send("Missing escrowId");
+
+    const escrowRef = db.collection("escrows").doc(escrowId);
+    const escrowDoc = await escrowRef.get();
+    if (!escrowDoc.exists) return res.status(404).send("Escrow not found");
+    const data = escrowDoc.data();
+
+    // Access check: either the buyer's token matches, or the caller is the
+    // authenticated seller who owns this escrow.
+    let authorized = token && data.buyerConfirmToken === token;
+    if (!authorized) {
+      const idToken = (req.headers.authorization || "").replace("Bearer ", "");
+      if (idToken) {
+        try {
+          const decoded = await admin.auth().verifyIdToken(idToken);
+          authorized = decoded.uid === data.sellerUid || ADMIN_EMAILS.includes(decoded.email);
+        } catch (err) {
+          // falls through to authorized = false
+        }
+      }
+    }
+    if (!authorized) return res.status(403).send("Not authorized to view this timeline");
+
+    const snap = await db
+      .collection("transactions")
+      .where("escrowId", "==", escrowId)
+      .orderBy("createdAt", "asc")
+      .get();
+
+    const events = snap.docs.map((d) => {
+      const t = d.data();
+      return {
+        type: t.type,
+        label: describeTransactionEvent(t.type),
+        createdAt: t.createdAt ? t.createdAt.toMillis() : null,
+      };
+    });
+
+    return res.status(200).json({ events });
+  } catch (err) {
+    logger.error("getEscrowTimeline: unexpected error", err);
+    return res.status(500).send("Internal error");
+  }
+}));
+
+// ---------------------------------------------------------------------------
+// resolveDispute
+//     Admin action closing out a disputed escrow — either releases funds to
+//     the seller (real Monnify transfer, same path as releaseFunds) or
+//     marks it refunded. Refund is recorded but NOT auto-transferred to the
+//     buyer — Monnify's reserved account flow doesn't collect the buyer's
+//     bank details anywhere, so an automated buyer payout isn't safely
+//     possible yet. Refunds need manual bank transfer outside the app for
+//     now; this just closes the escrow's state honestly instead of
+//     pretending it's automated.
+// ---------------------------------------------------------------------------
+
+exports.resolveDispute = onRequest(
+  { secrets: [MONNIFY_API_KEY, MONNIFY_SECRET_KEY] },
+  withCors(async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).send("Method not allowed");
+      }
+
+      let admin_;
+      try {
+        admin_ = await requireAdmin(req);
+      } catch (err) {
+        return res.status(err.status || 500).send(err.message || "Error");
+      }
+
+      const { escrowId, action, note } = req.body || {};
+      if (!escrowId || !["release", "refund"].includes(action)) {
+        return res.status(400).send("Missing escrowId or invalid action (release|refund)");
+      }
+
+      const escrowRef = db.collection("escrows").doc(escrowId);
+      const doc = await escrowRef.get();
+      if (!doc.exists) return res.status(404).send("Escrow not found");
+      const data = doc.data();
+
+      if (data.status !== "disputed") {
+        return res.status(409).send(`Cannot resolve from status: ${data.status}`);
+      }
+
+      if (action === "refund") {
+        await escrowRef.update({
+          status: "refunded",
+          releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        await logTransaction(escrowId, "dispute_resolved", {
+          action: "refund",
+          by: admin_.email,
+          note: note || null,
+        });
+        return res.status(200).json({ status: "refunded" });
+      }
+
+      // action === "release"
+      await escrowRef.update({
+        status: "released",
+        releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      try {
+        const accessToken = await getMonnifyAccessToken(
+          MONNIFY_API_KEY.value(),
+          MONNIFY_SECRET_KEY.value()
+        );
+        const transfer = await transferToSeller(
+          accessToken,
+          MONNIFY_SOURCE_ACCOUNT_NUMBER,
+          {
+            amountNaira: data.amount / 100,
+            reference: `HP-DISPUTE-RELEASE-${escrowId}-${Date.now()}`,
+            narration: `HoldPay dispute payout: ${data.itemDesc}`.slice(0, 100),
+            destinationAccountNumber: data.sellerBankAccount.accountNumber,
+            destinationBankCode: data.sellerBankAccount.bankCode,
+          }
+        );
+        await logTransaction(escrowId, "dispute_resolved", {
+          action: "release",
+          by: admin_.email,
+          note: note || null,
+          transferResponse: transfer,
+        });
+        return res.status(200).json({ status: "released", transfer });
+      } catch (transferErr) {
+        logger.error(`resolveDispute: transfer failed for ${escrowId}`, transferErr);
+        await logTransaction(escrowId, "transfer_failed", { error: transferErr.message });
+        return res.status(200).json({
+          status: "released",
+          transfer: { status: "FAILED", note: "Payout failed — needs manual retry." },
+        });
+      }
+    } catch (err) {
+      logger.error("resolveDispute: unexpected error", err);
+      return res.status(500).send("Internal error");
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// adminListEscrows
+//     Powers the general admin dashboard — every escrow across every
+//     seller, since Firestore rules correctly block cross-seller reads
+//     client-side. Optional status filter via query param.
+// ---------------------------------------------------------------------------
+
+exports.adminListEscrows = onRequest(withCors(async (req, res) => {
+  try {
+    try {
+      await requireAdmin(req);
+    } catch (err) {
+      return res.status(err.status || 500).send(err.message || "Error");
+    }
+
+    const statusFilter = req.query.status;
+    let query = db.collection("escrows").orderBy("createdAt", "desc").limit(200);
+    if (statusFilter) {
+      query = db
+        .collection("escrows")
+        .where("status", "==", statusFilter)
+        .orderBy("createdAt", "desc")
+        .limit(200);
+    }
+
+    const snap = await query.get();
+    const escrows = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        status: data.status,
+        itemDesc: data.itemDesc,
+        amount: data.amount,
+        sellerUid: data.sellerUid,
+        disputeReason: data.disputeReason || null,
+        createdAt: data.createdAt ? data.createdAt.toMillis() : null,
+        disputedAt: data.disputedAt ? data.disputedAt.toMillis() : null,
+      };
+    });
+
+    return res.status(200).json({ escrows });
+  } catch (err) {
+    logger.error("adminListEscrows: unexpected error", err);
+    return res.status(500).send("Internal error");
+  }
+}));
+
+// ---------------------------------------------------------------------------
 // 3. autoReleaseCron
-//    Runs daily. Sweeps 'shipped' escrows whose per-escrow autoReleaseAt
-//    deadline has passed with no dispute, and auto-releases them.
+//    Runs every 6 hours. Sends a 24h-ahead reminder, then auto-releases
+//    (with a real Monnify transfer) anything past its per-escrow deadline.
 // ---------------------------------------------------------------------------
 
 exports.autoReleaseCron = onSchedule(
-  { schedule: "every 6 hours", secrets: [RESEND_API_KEY] },
+  {
+    schedule: "every 6 hours",
+    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
+  },
   async () => {
     const now = admin.firestore.Timestamp.now();
     const apiKey = RESEND_API_KEY.value();
 
     // --- Reminder pass -----------------------------------------------------
-    // Nudge buyers whose auto-release is within 24h and who haven't already
-    // been reminded. reminderSentAt gates this so a 6-hourly cron doesn't
-    // re-send the same reminder 4 times before release actually happens.
     const reminderCutoff = admin.firestore.Timestamp.fromDate(
       new Date(Date.now() + 24 * 60 * 60 * 1000)
     );
@@ -847,9 +1236,6 @@ exports.autoReleaseCron = onSchedule(
     }
 
     // --- Release pass --------------------------------------------------
-    // autoReleaseAt is computed per-escrow in markShipped, respecting each
-    // seller's chosen window — so this just finds anything whose deadline
-    // has already passed, rather than applying one global cutoff.
     const staleShipped = await db
       .collection("escrows")
       .where("status", "==", "shipped")
@@ -865,25 +1251,50 @@ exports.autoReleaseCron = onSchedule(
 
     for (const doc of staleShipped.docs) {
       const escrowRef = doc.ref;
+      const data = doc.data();
       try {
-        await db.runTransaction(async (tx) => {
+        const released = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(escrowRef);
-          const data = fresh.data();
-          if (data.status !== "shipped") return; // guard against race with buyer confirm
+          const freshData = fresh.data();
+          if (freshData.status !== "shipped") return false; // race with buyer confirm
 
           tx.update(escrowRef, {
             status: "released",
             releasedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
+          return true;
         });
+
+        if (!released) continue;
 
         await logTransaction(doc.id, "auto_released", {
           reason: "No confirmation within the auto-release window",
         });
 
-        // Real Monnify Single Transfer call would go here too, same as releaseFunds.
-        // Emails for this transition are handled by onEscrowStatusChange.
-        logger.info(`autoReleaseCron: auto-released escrow ${doc.id}`);
+        try {
+          const accessToken = await getMonnifyAccessToken(
+            MONNIFY_API_KEY.value(),
+            MONNIFY_SECRET_KEY.value()
+          );
+          const transfer = await transferToSeller(
+            accessToken,
+            MONNIFY_SOURCE_ACCOUNT_NUMBER,
+            {
+              amountNaira: data.amount / 100,
+              reference: `HP-AUTORELEASE-${doc.id}-${Date.now()}`,
+              narration: `HoldPay payout: ${data.itemDesc}`.slice(0, 100),
+              destinationAccountNumber: data.sellerBankAccount.accountNumber,
+              destinationBankCode: data.sellerBankAccount.bankCode,
+            }
+          );
+          await logTransaction(doc.id, "transfer_initiated", { transferResponse: transfer });
+          logger.info(`autoReleaseCron: auto-released and paid out escrow ${doc.id}`);
+        } catch (transferErr) {
+          logger.error(`autoReleaseCron: transfer failed for ${doc.id}`, transferErr);
+          await logTransaction(doc.id, "transfer_failed", { error: transferErr.message });
+        }
+
+        // Emails for the status transition itself are handled by onEscrowStatusChange.
       } catch (err) {
         logger.error(`autoReleaseCron: failed for escrow ${doc.id}`, err);
       }

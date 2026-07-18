@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import SealBadge from "../components/SealBadge";
 import BrandPanel from "../components/BrandPanel";
+import SellerTrustBadge from "../components/SellerTrustBadge";
+import TransactionTimeline from "../components/TransactionTimeline";
 import { FUNCTIONS_BASE_URL } from "../lib/firebase";
 
 function formatNaira(kobo) {
@@ -150,6 +152,10 @@ export default function BuyerPay() {
           <SealBadge status={escrow.status} />
         </div>
 
+        <div style={{ marginBottom: 14 }}>
+          <SellerTrustBadge stats={escrow.sellerStats} />
+        </div>
+
         {escrow.sellerStats && (
           <p className="muted" style={{ marginTop: -6, marginBottom: 14 }}>
             This seller has completed {escrow.sellerStats.completedCount}{" "}
@@ -268,6 +274,10 @@ export default function BuyerPay() {
             This escrow is under dispute. HoldPay will follow up with both parties.
           </p>
         )}
+
+        <div style={{ marginTop: 16 }}>
+          <TransactionTimeline escrowId={escrow.escrowId} token={token} />
+        </div>
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ import CreateEscrow from "./pages/CreateEscrow";
 import BuyerPay from "./pages/BuyerPay";
 import StatusTracker from "./pages/StatusTracker";
 import Login from "./pages/Login";
+import AdminDashboard from "./pages/AdminDashboard";
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/login" element={<Login mode="login" />} />
           <Route path="/signup" element={<Login mode="signup" />} />
           <Route path="/pay/:token" element={<BuyerPay />} />
+          <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
           <Route
             path="/"
             element={
