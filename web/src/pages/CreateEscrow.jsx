@@ -63,6 +63,7 @@ export default function CreateEscrow() {
   // stops typing in either field, not on every keystroke.
   const [resolving, setResolving] = useState(false);
   const [resolvedName, setResolvedName] = useState(null);
+  const [payoutConfirmed, setPayoutConfirmed] = useState(false);
   const [resolveError, setResolveError] = useState(null);
   const resolveTimer = useRef(null);
   const resolveRequestId = useRef(0);
@@ -70,6 +71,7 @@ export default function CreateEscrow() {
   useEffect(() => {
     setResolvedName(null);
     setResolveError(null);
+    setPayoutConfirmed(false);
 
     if (resolveTimer.current) clearTimeout(resolveTimer.current);
 
@@ -120,6 +122,14 @@ export default function CreateEscrow() {
 
     if (!itemDesc.trim() || !amountNaira || !buyerPhone.trim()) {
       setError("Fill in the item, price, and buyer's phone number.");
+      return;
+    }
+
+    // Bank details can't be edited after creation (see StatusTracker) — this
+    // is the one point where a typo can still be caught, so if we managed
+    // to resolve a name, require the seller to actually look at it.
+    if (resolvedName && !payoutConfirmed) {
+      setError(`Please confirm the payout account name (${resolvedName}) below before continuing.`);
       return;
     }
 
@@ -362,9 +372,30 @@ export default function CreateEscrow() {
 
               {resolving && <div className="hint">Checking account…</div>}
               {!resolving && resolvedName && (
-                <div className="hint" style={{ color: "var(--ok)", fontWeight: 600 }}>
-                  Paying out to: {resolvedName}
-                </div>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                    marginTop: 8,
+                    padding: 10,
+                    background: "var(--ok-tint)",
+                    border: "1px solid #3c8c5d40",
+                    borderRadius: "var(--radius-sm)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={payoutConfirmed}
+                    onChange={(ev) => setPayoutConfirmed(ev.target.checked)}
+                    style={{ width: "auto", marginTop: 3 }}
+                  />
+                  <span style={{ fontSize: 13, color: "var(--ok)", fontWeight: 600 }}>
+                    Yes, pay out to <strong>{resolvedName}</strong> — this can't be changed
+                    once the escrow is created.
+                  </span>
+                </label>
               )}
               {!resolving && resolveError && (
                 <div className="hint" style={{ color: "var(--danger)" }}>{resolveError}</div>
