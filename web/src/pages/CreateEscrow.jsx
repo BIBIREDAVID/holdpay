@@ -43,6 +43,9 @@ export default function CreateEscrow() {
   const [buyerEmail, setBuyerEmail] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
+  const [banks, setBanks] = useState([]);
+  const [banksLoading, setBanksLoading] = useState(true);
+  const [banksError, setBanksError] = useState(null);
   const [autoReleaseDays, setAutoReleaseDays] = useState(String(DEFAULT_RELEASE_DAYS));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -67,6 +70,36 @@ export default function CreateEscrow() {
   const [resolveError, setResolveError] = useState(null);
   const resolveTimer = useRef(null);
   const resolveRequestId = useRef(0);
+
+  // Real bank list from Monnify, not a hardcoded array — codes have to
+  // match exactly what Monnify's own system recognizes, and a stale
+  // hand-typed list would silently drift out of sync over time.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBanks() {
+      try {
+        const res = await fetch(`${FUNCTIONS_BASE_URL}/getBanks`);
+        const body = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !body.banks) {
+          setBanksError("Couldn't load the bank list — you can still type a code directly.");
+          return;
+        }
+        setBanks(body.banks);
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setBanksError("Couldn't reach HoldPay for the bank list — you can still type a code directly.");
+        }
+      } finally {
+        if (!cancelled) setBanksLoading(false);
+      }
+    }
+    loadBanks();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setResolvedName(null);
@@ -361,13 +394,26 @@ export default function CreateEscrow() {
                 />
               </div>
               <div className="field">
-                <label>Bank code</label>
-                <input
-                  value={bankCode}
-                  onChange={(e) => setBankCode(e.target.value)}
-                  placeholder="058 (GTBank)"
-                />
-                <div className="hint">Swap this for a bank-name dropdown before demo day.</div>
+                <label>Bank</label>
+                {banksLoading ? (
+                  <input value="" placeholder="Loading banks…" disabled />
+                ) : banks.length > 0 ? (
+                  <select value={bankCode} onChange={(e) => setBankCode(e.target.value)}>
+                    <option value="">Select a bank</option>
+                    {banks.map((b) => (
+                      <option key={b.code} value={b.code}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={bankCode}
+                    onChange={(e) => setBankCode(e.target.value)}
+                    placeholder="058 (GTBank)"
+                  />
+                )}
+                {banksError && <div className="hint" style={{ color: "var(--danger)" }}>{banksError}</div>}
               </div>
 
               {resolving && <div className="hint">Checking account…</div>}

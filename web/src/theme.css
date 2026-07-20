@@ -458,6 +458,7 @@ textarea:focus-visible {
 }
 
 .field input,
+.field select,
 .field textarea {
   width: 100%;
   padding: 11px 13px;
@@ -470,23 +471,35 @@ textarea:focus-visible {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
+.field select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b6f8a' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
 .field input::placeholder,
 .field textarea::placeholder {
   color: #9a9db8;
 }
 
 .field input:hover,
+.field select:hover,
 .field textarea:hover {
   border-color: #1b1f3b33;
 }
 
 .field input:focus,
+.field select:focus,
 .field textarea:focus {
   border-color: var(--adire);
   background: white;
 }
 
 .field input:disabled,
+.field select:disabled,
 .field textarea:disabled {
   opacity: 0.55;
   cursor: not-allowed;
