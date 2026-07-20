@@ -189,6 +189,16 @@ export default function BuyerPay() {
           <div className="reserved-account">
             <div className="bank">Pay into this account — {escrow.monnify?.bankName || "bank details loading"}</div>
             <div className="number">{escrow.monnify?.reservedAccountNumber}</div>
+            {escrow.monnify?.checkoutUrl && (
+              <a
+                href={escrow.monnify.checkoutUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: "inline-block", marginTop: 12, fontSize: 13, color: "#cfd3f2" }}
+              >
+                Prefer to pay by card instead? →
+              </a>
+            )}
           </div>
         )}
 

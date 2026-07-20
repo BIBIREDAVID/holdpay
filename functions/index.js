@@ -27,15 +27,6 @@ const MONNIFY_SOURCE_ACCOUNT_NUMBER = process.env.MONNIFY_SOURCE_ACCOUNT_NUMBER;
 // firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 
-// Monnify's Reserve Account V2 API requires a bvn or nin identifying the
-// account holder — this is a per-CUSTOMER requirement, not per-transaction,
-// so rather than collecting BVN/NIN from every seller (real friction for a
-// hackathon-stage product), the platform operator's own BVN/NIN is used
-// once, for every reserved account created. This is genuinely sensitive PII
-// even though it's your own — kept in Secret Manager, not plain .env, same
-// tier as your API keys. firebase functions:secrets:set MONNIFY_ACCOUNT_HOLDER_BVN
-const MONNIFY_ACCOUNT_HOLDER_BVN = defineSecret("MONNIFY_ACCOUNT_HOLDER_BVN");
-
 // Sandbox for now — swap to https://api.monnify.com once you go fully live.
 const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
 
@@ -151,52 +142,61 @@ async function getMonnifyAccessToken(apiKey, secretKey) {
 }
 
 // ---------------------------------------------------------------------------
-// createMonnifyReservedAccount
+// createMonnifyInvoice
 // Called right after an escrow doc is created (see onEscrowCreated below).
-// Creates a dedicated virtual account for THIS escrow specifically — the
-// accountReference is the escrow's own ID, so payment webhooks can match
-// straight back to it via monnify.reservedAccountRef.
+// Monnify support confirmed Reserved Accounts were the wrong feature for
+// this use case — that product mandates BVN/NIN because it's designed for
+// a persistent account tied to one real customer. Dynamic Invoices are
+// built for exactly this instead: a fresh, single-use virtual account per
+// transaction, no KYC step, with a built-in expiry. The invoiceReference
+// reuses the ref already generated client-side, so payment webhooks can
+// match straight back to the escrow via monnify.reservedAccountRef.
+// Docs: https://developers.monnify.com/docs/collections/one-time-payments/invoice
 // ---------------------------------------------------------------------------
 
-async function createMonnifyReservedAccount(accessToken, contractCode, {
-  accountReference,
-  accountName,
+async function createMonnifyInvoice(accessToken, contractCode, {
+  invoiceReference,
+  amountNaira,
+  description,
   customerEmail,
   customerName,
-  bvn,
+  expiryDate, // "yyyy-MM-dd HH:mm:ss", required format per Monnify's docs
 }) {
-  const res = await fetch(`${MONNIFY_BASE_URL}/api/v2/bank-transfer/reserved-accounts`, {
+  const res = await fetch(`${MONNIFY_BASE_URL}/api/v1/invoice/create`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      accountReference,
-      accountName,
+      amount: amountNaira,
+      invoiceReference,
+      description: description || "HoldPay escrow payment",
       currencyCode: "NGN",
       contractCode,
-      customerEmail: customerEmail || `buyer+${accountReference}@holdpay.app`,
-      customerName: customerName || accountName,
-      bvn,
-      getAllAvailableBanks: true, // single dedicated bank keeps the UI simple
+      customerEmail: customerEmail || `buyer+${invoiceReference}@holdpay.app`,
+      customerName: customerName || "HoldPay Buyer",
+      expiryDate,
+      paymentMethods: ["ACCOUNT_TRANSFER", "CARD"],
     }),
   });
 
   const body = await res.json();
   if (!res.ok || !body.requestSuccessful) {
-    throw new Error(body.responseMessage || `Monnify reserved account creation failed: ${res.status}`);
+    throw new Error(body.responseMessage || `Monnify invoice creation failed: ${res.status}`);
   }
 
-  const account = body.responseBody?.accounts?.[0];
-  if (!account) {
-    throw new Error("Monnify reserved account response missing account details");
+  const invoice = body.responseBody;
+  if (!invoice?.accountNumber) {
+    throw new Error("Monnify invoice response missing account details");
   }
 
   return {
-    accountNumber: account.accountNumber,
-    bankName: account.bankName,
-    bankCode: account.bankCode,
+    accountNumber: invoice.accountNumber,
+    bankName: invoice.bankName,
+    bankCode: invoice.bankCode,
+    checkoutUrl: invoice.checkoutUrl,
+    invoiceReference: invoice.invoiceReference,
   };
 }
 
@@ -463,6 +463,7 @@ exports.getEscrowByToken = onRequest(withCors(async (req, res) => {
         ? {
             reservedAccountNumber: data.monnify.reservedAccountNumber,
             bankName: data.monnify.bankName,
+            checkoutUrl: data.monnify.checkoutUrl || null,
           }
         : null,
       paidAt: data.paidAt || null,
@@ -597,7 +598,7 @@ exports.resolveBankAccount = onRequest(
 exports.onEscrowCreated = onDocumentCreated(
   {
     document: "escrows/{escrowId}",
-    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY, MONNIFY_ACCOUNT_HOLDER_BVN],
+    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
   },
   async (event) => {
     const escrowId = event.params.escrowId;
@@ -609,7 +610,7 @@ exports.onEscrowCreated = onDocumentCreated(
       .doc(data.sellerUid)
       .set({ totalCount: admin.firestore.FieldValue.increment(1) }, { merge: true });
 
-    // --- Real Monnify Reserved Account creation ---
+    // --- Real Monnify Dynamic Invoice creation ---
     // Only runs if this escrow doesn't already have a real account number
     // (guards against double-creating if this trigger somehow re-runs).
     if (data.monnify?.reservedAccountNumber === "PENDING" || !data.monnify?.reservedAccountNumber) {
@@ -619,32 +620,43 @@ exports.onEscrowCreated = onDocumentCreated(
           MONNIFY_SECRET_KEY.value()
         );
 
-        const account = await createMonnifyReservedAccount(
+        // 3 days to pay before the invoice (and its virtual account) expires
+        // — Monnify wants "yyyy-MM-dd HH:mm:ss", not ISO.
+        const expiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+        const expiryDate = expiry.toISOString().slice(0, 19).replace("T", " ");
+
+        const invoice = await createMonnifyInvoice(
           accessToken,
           MONNIFY_CONTRACT_CODE,
           {
-            accountReference: escrowId,
-            accountName: `HoldPay - ${data.itemDesc}`.slice(0, 100),
+            // Reuse the ref already generated client-side at creation time
+            // (see CreateEscrow.jsx) — the webhook matches on this exact
+            // field, so keeping it as the single source of truth here
+            // means nothing downstream needs to change.
+            invoiceReference: data.monnify.reservedAccountRef,
+            amountNaira: data.amount / 100,
+            description: data.itemDesc?.slice(0, 100),
             customerEmail: data.buyerContact?.email,
             customerName: data.buyerContact?.phone || "HoldPay Buyer",
-            bvn: MONNIFY_ACCOUNT_HOLDER_BVN.value(),
+            expiryDate,
           }
         );
 
         await event.data.ref.update({
-          "monnify.reservedAccountNumber": account.accountNumber,
-          "monnify.bankName": account.bankName,
-          "monnify.bankCode": account.bankCode,
+          "monnify.reservedAccountNumber": invoice.accountNumber,
+          "monnify.bankName": invoice.bankName,
+          "monnify.bankCode": invoice.bankCode,
+          "monnify.checkoutUrl": invoice.checkoutUrl,
         });
 
-        await logTransaction(escrowId, "reserved_account_created", { account });
-        logger.info(`onEscrowCreated: reserved account created for escrow ${escrowId}`);
+        await logTransaction(escrowId, "invoice_created", { invoice });
+        logger.info(`onEscrowCreated: invoice created for escrow ${escrowId}`);
       } catch (err) {
         // Don't let a Monnify outage silently strand the escrow — flag it
         // so you notice in the dashboard/logs rather than a buyer hitting
         // a broken "PENDING" account number on their payment page.
-        logger.error(`onEscrowCreated: reserved account creation failed for ${escrowId}`, err);
-        await logTransaction(escrowId, "reserved_account_creation_failed", {
+        logger.error(`onEscrowCreated: invoice creation failed for ${escrowId}`, err);
+        await logTransaction(escrowId, "invoice_creation_failed", {
           error: err.message,
         });
       }
