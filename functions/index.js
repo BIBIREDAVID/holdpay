@@ -176,7 +176,7 @@ async function createMonnifyReservedAccount(accessToken, contractCode, {
       accountName,
       currencyCode: "NGN",
       contractCode,
-      customerEmail: customerEmail || "buyer@holdpay.app",
+      customerEmail: customerEmail || `buyer+${accountReference}@holdpay.app`,
       customerName: customerName || accountName,
       bvn,
       getAllAvailableBanks: true, // single dedicated bank keeps the UI simple
