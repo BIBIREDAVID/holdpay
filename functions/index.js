@@ -179,7 +179,7 @@ async function createMonnifyReservedAccount(accessToken, contractCode, {
       customerEmail: customerEmail || "buyer@holdpay.app",
       customerName: customerName || accountName,
       bvn,
-      getAllAvailableBanks: false, // single dedicated bank keeps the UI simple
+      getAllAvailableBanks: true, // single dedicated bank keeps the UI simple
     }),
   });
 
