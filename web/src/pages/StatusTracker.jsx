@@ -60,7 +60,6 @@ export default function StatusTracker() {
   const [escrows, setEscrows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [shippingId, setShippingId] = useState(null);
-  const [simulatingId, setSimulatingId] = useState(null);
   const [filter, setFilter] = useState("all");
   const [now, setNow] = useState(new Date());
   const [stats, setStats] = useState(null);
@@ -123,33 +122,6 @@ export default function StatusTracker() {
       alert("Couldn't reach HoldPay. Check your connection.");
     } finally {
       setShippingId(null);
-    }
-  }
-
-  // TEMPORARY — stands in for a real Monnify payment while sandbox creds
-  // aren't available. Remove this button (and the backend function behind
-  // it) once real payments are wired up.
-  async function handleSimulatePayment(escrowId) {
-    setSimulatingId(escrowId);
-    try {
-      const idToken = await user.getIdToken();
-      const res = await fetch(`${FUNCTIONS_BASE_URL}/simulatePayment`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ escrowId }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        alert(text || "Couldn't simulate payment.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Couldn't reach HoldPay. Check your connection.");
-    } finally {
-      setSimulatingId(null);
     }
   }
 
@@ -295,6 +267,18 @@ export default function StatusTracker() {
                 </p>
               )}
 
+              {e.status === "released" && e.payoutStatus === "pending" && (
+                <p className="muted" style={{ marginBottom: 10 }}>
+                  Payout in progress — Monnify hasn't confirmed it's landed yet.
+                </p>
+              )}
+
+              {e.status === "released" && e.payoutStatus === "failed" && (
+                <div className="error-banner" style={{ marginBottom: 10 }}>
+                  Payout failed to reach your account. This needs manual follow-up — contact support.
+                </div>
+              )}
+
               {detailsId === e.id && e.buyerConfirmToken && (
                 <div style={{ padding: 12, marginBottom: 12, background: "var(--paper)", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
                   <div className="hint" style={{ marginBottom: 8 }}>Buyer's payment link</div>
@@ -327,19 +311,10 @@ export default function StatusTracker() {
               )}
 
               {e.status === "pending_payment" && (
-                <div>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => handleSimulatePayment(e.id)}
-                    disabled={simulatingId === e.id}
-                    style={{ borderColor: "var(--seal-gold)", color: "var(--seal-gold)" }}
-                  >
-                    {simulatingId === e.id ? "Simulating…" : "Simulate payment (test)"}
-                  </button>
-                  <div className="hint" style={{ marginTop: 6 }}>
-                    No real payment happens — stands in for Monnify until sandbox credentials are live.
-                  </div>
-                </div>
+                <p className="muted" style={{ marginBottom: 0 }}>
+                  Waiting for the buyer to pay into the reserved account above — this updates
+                  automatically the moment Monnify confirms payment.
+                </p>
               )}
 
               {e.status === "held" && (
