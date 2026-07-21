@@ -30,6 +30,11 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 // Sandbox for now — swap to https://api.monnify.com once you go fully live.
 const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
 
+// Where Monnify's hosted checkout sends the buyer back to after payment —
+// without this, the "Transaction Successful" screen has nowhere to go and
+// just sits there. Update if your production domain ever changes.
+const HOLDPAY_APP_URL = "https://holdpayescrow.vercel.app";
+
 // Fallback only. Each escrow can now set its own `autoReleaseDays` at
 // creation time (see CreateEscrow); this is what applies if that field is
 // somehow missing (e.g. an escrow created before this feature existed).
@@ -161,6 +166,7 @@ async function createMonnifyInvoice(accessToken, contractCode, {
   customerEmail,
   customerName,
   expiryDate, // "yyyy-MM-dd HH:mm:ss", required format per Monnify's docs
+  redirectUrl,
 }) {
   const res = await fetch(`${MONNIFY_BASE_URL}/api/v1/invoice/create`, {
     method: "POST",
@@ -178,6 +184,7 @@ async function createMonnifyInvoice(accessToken, contractCode, {
       customerName: customerName || "HoldPay Buyer",
       expiryDate,
       paymentMethods: ["ACCOUNT_TRANSFER", "CARD"],
+      redirectUrl,
     }),
   });
 
@@ -639,6 +646,7 @@ exports.onEscrowCreated = onDocumentCreated(
             customerEmail: data.buyerContact?.email,
             customerName: data.buyerContact?.phone || "HoldPay Buyer",
             expiryDate,
+            redirectUrl: `${HOLDPAY_APP_URL}/pay/${data.buyerConfirmToken}`,
           }
         );
 
