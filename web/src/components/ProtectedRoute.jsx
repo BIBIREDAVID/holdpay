@@ -1,7 +1,8 @@
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../lib/AuthContext";
+import ProfileSetupModal from "./ProfileSetupModal";
 
-export default function ProtectedRoute({ children }) {
+export default function ProtectedRoute({ children, showProfileSetup = true }) {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -16,5 +17,10 @@ export default function ProtectedRoute({ children }) {
     return <Navigate to="/login" replace />;
   }
 
-  return children;
+  return (
+    <>
+      {showProfileSetup && <ProfileSetupModal />}
+      {children}
+    </>
+  );
 }

@@ -5,6 +5,7 @@ import { useAuth } from "../lib/AuthContext";
 const NAV_ITEMS = [
   { key: "new", to: "/", label: "New escrow" },
   { key: "dashboard", to: "/dashboard", label: "Dashboard" },
+  { key: "profile", to: "/profile", label: "Profile" },
 ];
 
 export default function SellerNav({ active }) {
