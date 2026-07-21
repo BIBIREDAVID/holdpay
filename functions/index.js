@@ -24,8 +24,19 @@ const MONNIFY_API_KEY = defineSecret("MONNIFY_API_KEY");
 // Manager. Set the real values in functions/.env before deploying.
 const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE;
 const MONNIFY_SOURCE_ACCOUNT_NUMBER = process.env.MONNIFY_SOURCE_ACCOUNT_NUMBER;
-// firebase functions:secrets:set RESEND_API_KEY
-const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
+// EmailJS — service_id, template_id, and public_key are identifiers, not
+// secrets, so they live in functions/.env alongside the Monnify ones.
+// The private key genuinely IS a secret (it authorizes sending as your
+// account), so it stays in Secret Manager like everything else sensitive.
+// Set up once in the EmailJS dashboard: one generic template with
+// {{to_email}}, {{subject}}, and {{message_html}} placeholders — the code
+// keeps generating full HTML per email exactly as before, this just swaps
+// the transport underneath it.
+const EMAILJS_SERVICE_ID = process.env.EMAILJS_SERVICE_ID;
+const EMAILJS_TEMPLATE_ID = process.env.EMAILJS_TEMPLATE_ID;
+const EMAILJS_PUBLIC_KEY = process.env.EMAILJS_PUBLIC_KEY;
+// firebase functions:secrets:set EMAILJS_PRIVATE_KEY
+const EMAILJS_PRIVATE_KEY = defineSecret("EMAILJS_PRIVATE_KEY");
 
 // Sandbox for now — swap to https://api.monnify.com once you go fully live.
 const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
@@ -91,19 +102,33 @@ function withCors(handler) {
 // a broken email send should never block a status update or payment flow —
 // notifications are a nice-to-have, not something that can hold up money
 // moving. Silently no-ops if `to` is empty (buyer email is optional).
-async function sendEmail(apiKey, { to, subject, html }) {
+//
+// Uses one generic EmailJS template (see EMAILJS_TEMPLATE_ID above) with
+// {{to_email}}, {{subject}}, {{message_html}} placeholders — every call
+// site below still generates full HTML per email exactly as it always has,
+// EmailJS just delivers it. accessToken (the private key) is what lets
+// this run server-side without EmailJS's normal browser-origin allowlist
+// rejecting it.
+async function sendEmail(privateKey, { to, subject, html }) {
   if (!to) return;
   try {
-    const res = await fetch("https://api.resend.com/emails", {
+    const res = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from: "HoldPay <notifications@holdpay.app>", to, subject, html }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_id: EMAILJS_SERVICE_ID,
+        template_id: EMAILJS_TEMPLATE_ID,
+        user_id: EMAILJS_PUBLIC_KEY,
+        accessToken: privateKey,
+        template_params: {
+          to_email: to,
+          subject,
+          message_html: html,
+        },
+      }),
     });
     if (!res.ok) {
-      logger.warn(`sendEmail: Resend returned ${res.status}`, await res.text());
+      logger.warn(`sendEmail: EmailJS returned ${res.status}`, await res.text());
     }
   } catch (err) {
     logger.warn("sendEmail: failed", err);
@@ -605,7 +630,7 @@ exports.resolveBankAccount = onRequest(
 exports.onEscrowCreated = onDocumentCreated(
   {
     document: "escrows/{escrowId}",
-    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
+    secrets: [EMAILJS_PRIVATE_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
   },
   async (event) => {
     const escrowId = event.params.escrowId;
@@ -672,7 +697,7 @@ exports.onEscrowCreated = onDocumentCreated(
 
     if (data.buyerContact?.email) {
       const naira = `₦${(data.amount / 100).toLocaleString("en-NG")}`;
-      await sendEmail(RESEND_API_KEY.value(), {
+      await sendEmail(EMAILJS_PRIVATE_KEY.value(), {
         to: data.buyerContact.email,
         subject: `An escrow was set up for "${data.itemDesc}"`,
         html: `<p>A seller has set up a HoldPay escrow for <strong>${data.itemDesc}</strong> (${naira}). Open the payment link they sent you to pay into a protected account — your money stays held until you confirm the item arrived.</p>`,
@@ -682,7 +707,7 @@ exports.onEscrowCreated = onDocumentCreated(
 );
 
 exports.onEscrowStatusChange = onDocumentUpdated(
-  { document: "escrows/{escrowId}", secrets: [RESEND_API_KEY] },
+  { document: "escrows/{escrowId}", secrets: [EMAILJS_PRIVATE_KEY] },
   async (event) => {
     const before = event.data?.before.data();
     const after = event.data?.after.data();
@@ -708,7 +733,7 @@ exports.onEscrowStatusChange = onDocumentUpdated(
     }
 
     const buyerEmail = after.buyerContact?.email;
-    const apiKey = RESEND_API_KEY.value();
+    const apiKey = EMAILJS_PRIVATE_KEY.value();
     const naira = `₦${(after.amount / 100).toLocaleString("en-NG")}`;
     const item = after.itemDesc;
 
@@ -1251,11 +1276,11 @@ exports.adminListEscrows = onRequest(withCors(async (req, res) => {
 exports.autoReleaseCron = onSchedule(
   {
     schedule: "every 6 hours",
-    secrets: [RESEND_API_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
+    secrets: [EMAILJS_PRIVATE_KEY, MONNIFY_API_KEY, MONNIFY_SECRET_KEY],
   },
   async () => {
     const now = admin.firestore.Timestamp.now();
-    const apiKey = RESEND_API_KEY.value();
+    const apiKey = EMAILJS_PRIVATE_KEY.value();
 
     // --- Reminder pass -----------------------------------------------------
     const reminderCutoff = admin.firestore.Timestamp.fromDate(
