@@ -4,7 +4,7 @@ import { useAuth } from "../lib/AuthContext";
 
 const NAV_ITEMS = [
   { key: "new", to: "/", label: "New escrow" },
-  { key: "dashboard", to: "/dashboard", label: "Dashboard" },
+  { key: "dashboard", to: "/dashboard", label: "Transaction" },
   { key: "profile", to: "/profile", label: "Profile" },
 ];
 

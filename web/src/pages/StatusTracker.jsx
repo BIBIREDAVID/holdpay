@@ -7,9 +7,15 @@ import AppSidebar from "../components/AppSidebar";
 import SealBadge from "../components/SealBadge";
 import { QRCodeSVG } from "qrcode.react";
 
+
+
+
 function formatNaira(kobo) {
   return `₦${(kobo / 100).toLocaleString("en-NG")}`;
 }
+
+
+
 
 // autoReleaseAt can be a Firestore Timestamp (has .toDate) or, briefly,
 // null right after ship before the write round-trips back down.
@@ -19,13 +25,22 @@ function formatCountdown(autoReleaseAt, now) {
   const msLeft = target.getTime() - now.getTime();
   if (msLeft <= 0) return "Releasing shortly";
 
+
+
+
   const days = Math.floor(msLeft / (24 * 60 * 60 * 1000));
   const hours = Math.floor((msLeft % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+
+
 
   if (days >= 1) return `Auto-releases in ${days}d ${hours}h`;
   const mins = Math.floor((msLeft % (60 * 60 * 1000)) / (60 * 1000));
   return `Auto-releases in ${hours}h ${mins}m`;
 }
+
+
+
 
 function downloadCSV(escrows) {
   const headers = ["Item", "Amount (NGN)", "Status", "Created", "Shipped", "Released"];
@@ -38,11 +53,17 @@ function downloadCSV(escrows) {
     e.releasedAt?.toDate ? e.releasedAt.toDate().toISOString() : "",
   ]);
 
+
+
+
   // Quote every field and escape embedded quotes — item descriptions are
   // free text and can contain commas.
   const csv = [headers, ...rows]
     .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
     .join("\n");
+
+
+
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -55,6 +76,9 @@ function downloadCSV(escrows) {
   URL.revokeObjectURL(url);
 }
 
+
+
+
 export default function StatusTracker() {
   const { user } = useAuth();
   const [escrows, setEscrows] = useState([]);
@@ -66,11 +90,17 @@ export default function StatusTracker() {
   const [detailsId, setDetailsId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
+
+
+
   function copyLink(link, escrowId) {
     navigator.clipboard.writeText(link);
     setCopiedId(escrowId);
     setTimeout(() => setCopiedId(null), 2000);
   }
+
+
+
 
   useEffect(() => {
     if (!user) return;
@@ -80,12 +110,18 @@ export default function StatusTracker() {
     return () => unsub();
   }, [user]);
 
+
+
+
   // Ticks once a minute so countdown text stays roughly accurate without
   // re-rendering on every second.
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(interval);
   }, []);
+
+
+
 
   useEffect(() => {
     if (!user) return;
@@ -100,6 +136,9 @@ export default function StatusTracker() {
     });
     return () => unsub();
   }, [user]);
+
+
+
 
   async function handleMarkShipped(escrowId) {
     setShippingId(escrowId);
@@ -125,6 +164,9 @@ export default function StatusTracker() {
     }
   }
 
+
+
+
   if (loading) {
     return (
       <div className="app-shell">
@@ -137,6 +179,9 @@ export default function StatusTracker() {
     );
   }
 
+
+
+
   const heldTotal = escrows
     .filter((e) => ["held", "shipped"].includes(e.status))
     .reduce((sum, e) => sum + e.amount, 0);
@@ -148,7 +193,13 @@ export default function StatusTracker() {
   ).length;
   const disputedCount = escrows.filter((e) => e.status === "disputed").length;
 
+
+
+
   const filtered = filter === "all" ? escrows : escrows.filter((e) => e.status === filter);
+
+
+
 
   return (
     <div className="app-shell">
@@ -163,6 +214,9 @@ export default function StatusTracker() {
             buyers see on your payment links.
           </p>
         )}
+
+
+
 
         <div className="stat-grid">
           <div className="card">
@@ -179,11 +233,17 @@ export default function StatusTracker() {
           </div>
         </div>
 
+
+
+
         {disputedCount > 0 && (
           <div className="error-banner">
             {disputedCount} escrow{disputedCount > 1 ? "s" : ""} under dispute — needs your attention.
           </div>
         )}
+
+
+
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -208,6 +268,9 @@ export default function StatusTracker() {
             ))}
           </div>
 
+
+
+
           {escrows.length > 0 && (
             <button
               onClick={() => downloadCSV(escrows)}
@@ -227,9 +290,15 @@ export default function StatusTracker() {
           )}
         </div>
 
+
+
+
         {filtered.length === 0 && (
           <p className="muted">Nothing here yet.</p>
         )}
+
+
+
 
         <div className="escrow-grid">
           {filtered.map((e) => (
@@ -257,15 +326,33 @@ export default function StatusTracker() {
                 {detailsId === e.id ? "Tap to hide link & QR" : "Tap to view link & QR"}
               </div>
 
+
+
+
               {e.status === "disputed" && e.disputeReason && (
                 <p className="muted" style={{ marginBottom: 10 }}>Reason: {e.disputeReason}</p>
               )}
 
-              {e.status === "shipped" && e.autoReleaseAt && (
+
+
+
+              {e.status === "held" && (
                 <p className="muted" style={{ marginBottom: 10 }}>
-                  {formatCountdown(e.autoReleaseAt, now)} unless a dispute is raised.
+                  Auto-releases {e.autoReleaseDays || 7} days after you mark this shipped, unless the buyer disputes.
                 </p>
               )}
+
+
+
+
+              {e.status === "shipped" && e.autoReleaseAt && (
+                <p className="muted" style={{ marginBottom: 10 }}>
+                  {formatCountdown(e.autoReleaseAt, now)} ({e.autoReleaseDays || 7}-day window) unless a dispute is raised.
+                </p>
+              )}
+
+
+
 
               {e.status === "released" && e.payoutStatus === "pending" && (
                 <p className="muted" style={{ marginBottom: 10 }}>
@@ -273,11 +360,17 @@ export default function StatusTracker() {
                 </p>
               )}
 
+
+
+
               {e.status === "released" && e.payoutStatus === "failed" && (
                 <div className="error-banner" style={{ marginBottom: 10 }}>
                   Payout failed to reach your account. This needs manual follow-up — contact support.
                 </div>
               )}
+
+
+
 
               {detailsId === e.id && e.buyerConfirmToken && (
                 <div style={{ padding: 12, marginBottom: 12, background: "var(--paper)", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
@@ -310,12 +403,18 @@ export default function StatusTracker() {
                 </div>
               )}
 
+
+
+
               {e.status === "pending_payment" && (
                 <p className="muted" style={{ marginBottom: 0 }}>
                   Waiting for the buyer to pay into the reserved account above — this updates
                   automatically the moment Monnify confirms payment.
                 </p>
               )}
+
+
+
 
               {e.status === "held" && (
                 <button
@@ -333,3 +432,6 @@ export default function StatusTracker() {
     </div>
   );
 }
+
+
+

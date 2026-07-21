@@ -9,6 +9,7 @@ import AppSidebar from "../components/AppSidebar";
 // npm install qrcode.react
 import { QRCodeSVG } from "qrcode.react";
 
+
 // Resizes/recompresses client-side before upload — phone-camera photos are
 // often 3-8MB, which is a real cost/speed problem on the mobile data most
 // buyers and sellers here are on. 1200px is plenty for a trust photo.
@@ -22,9 +23,11 @@ async function compressImage(file, maxWidth = 1200, quality = 0.8) {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
 
+
 function generateRef() {
   return "HP-" + crypto.randomUUID().slice(0, 8).toUpperCase();
 }
+
 
 function formatNairaPreview(amountNaira) {
   const n = parseFloat(amountNaira);
@@ -32,9 +35,125 @@ function formatNairaPreview(amountNaira) {
   return `₦${n.toLocaleString("en-NG")}`;
 }
 
+
 const MIN_RELEASE_DAYS = 1;
 const MAX_RELEASE_DAYS = 30;
 const DEFAULT_RELEASE_DAYS = 7;
+
+
+// Searchable bank picker — a plain <select> gets unwieldy once the Monnify
+// bank list is fully loaded (100+ entries). Filters by name as you type;
+// falls back gracefully if `banks` is empty (caller still shows the raw
+// code input in that case, same as before).
+function BankSearchSelect({ banks, value, onChange, disabled }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef(null);
+
+  const selected = banks.find((b) => b.code === value) || null;
+
+  const filtered = query.trim()
+    ? banks.filter((b) => b.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : banks;
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function pick(bank) {
+    onChange(bank.code);
+    setOpen(false);
+    setQuery("");
+  }
+
+  function handleKeyDown(e) {
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[highlight]) pick(filtered[highlight]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+      setQuery("");
+    }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <input
+        value={open ? query : selected?.name || ""}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setHighlight(0);
+          if (!open) setOpen(true);
+        }}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onKeyDown={handleKeyDown}
+        placeholder="Search for your bank…"
+        disabled={disabled}
+        autoComplete="off"
+      />
+      {open && (
+        <div
+          className="card"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            maxHeight: 220,
+            overflowY: "auto",
+            padding: 6,
+          }}
+        >
+          {filtered.length === 0 && (
+            <div className="muted" style={{ padding: "8px 10px", fontSize: 13 }}>
+              No banks match "{query}"
+            </div>
+          )}
+          {filtered.map((b, i) => (
+            <div
+              key={b.code}
+              onMouseDown={(e) => {
+                e.preventDefault(); // keep input from blurring before onClick fires
+                pick(b);
+              }}
+              onMouseEnter={() => setHighlight(i)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: "var(--radius-sm)",
+                cursor: "pointer",
+                fontSize: 13.5,
+                background: i === highlight ? "var(--paper)" : "transparent",
+                fontWeight: b.code === value ? 600 : 400,
+              }}
+            >
+              {b.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 export default function CreateEscrow() {
   const { user } = useAuth();
@@ -55,12 +174,14 @@ export default function CreateEscrow() {
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
+
   function handlePhotoChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     setPhotoFile(file);
     setPhotoPreviewUrl(URL.createObjectURL(file));
   }
+
 
   // Bank account resolve — debounced so it fires ~500ms after the seller
   // stops typing in either field, not on every keystroke.
@@ -70,6 +191,7 @@ export default function CreateEscrow() {
   const [resolveError, setResolveError] = useState(null);
   const resolveTimer = useRef(null);
   const resolveRequestId = useRef(0);
+
 
   // Real bank list from Monnify, not a hardcoded array — codes have to
   // match exactly what Monnify's own system recognizes, and a stale
@@ -101,16 +223,20 @@ export default function CreateEscrow() {
     };
   }, []);
 
+
   useEffect(() => {
     setResolvedName(null);
     setResolveError(null);
     setPayoutConfirmed(false);
 
+
     if (resolveTimer.current) clearTimeout(resolveTimer.current);
+
 
     const accNum = accountNumber.trim();
     const code = bankCode.trim();
     if (accNum.length < 10 || !code) return;
+
 
     resolveTimer.current = setTimeout(async () => {
       const thisRequest = ++resolveRequestId.current;
@@ -127,8 +253,10 @@ export default function CreateEscrow() {
         });
         const body = await res.json().catch(() => ({}));
 
+
         // Ignore stale responses if the seller kept typing after this fired.
         if (thisRequest !== resolveRequestId.current) return;
+
 
         if (!res.ok) {
           setResolveError(body.error || "Couldn't verify that account. You can still continue.");
@@ -144,19 +272,23 @@ export default function CreateEscrow() {
       }
     }, 500);
 
+
     return () => {
       if (resolveTimer.current) clearTimeout(resolveTimer.current);
     };
   }, [accountNumber, bankCode, user]);
 
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
+
 
     if (!itemDesc.trim() || !amountNaira || !buyerPhone.trim() || !buyerEmail.trim()) {
       setError("Fill in the item, price, buyer's phone number, and buyer's email.");
       return;
     }
+
 
     // Bank details can't be edited after creation (see StatusTracker) — this
     // is the one point where a typo can still be caught, so if we managed
@@ -165,6 +297,7 @@ export default function CreateEscrow() {
       setError(`Please confirm the payout account name (${resolvedName}) below before continuing.`);
       return;
     }
+
 
     const releaseDaysNum = parseInt(autoReleaseDays, 10);
     if (
@@ -176,16 +309,19 @@ export default function CreateEscrow() {
       return;
     }
 
+
     setSubmitting(true);
     try {
       const confirmToken = crypto.randomUUID();
       const reservedAccountRef = generateRef();
+
 
       // Pre-generate the doc reference so we know the escrow ID before
       // writing — needed because the photo path is keyed on escrowId, and
       // escrows can't be updated after creation (create-then-locked, per
       // your Firestore rules), so the photo URL has to be known upfront.
       const escrowRef = doc(collection(db, "escrows"));
+
 
       let photoUrl = null;
       if (photoFile) {
@@ -205,6 +341,7 @@ export default function CreateEscrow() {
           setUploadingPhoto(false);
         }
       }
+
 
       await setDoc(escrowRef, {
         status: "pending_payment",
@@ -241,6 +378,7 @@ export default function CreateEscrow() {
         disputeReason: null,
       });
 
+
       const buyerLink = `${window.location.origin}/pay/${confirmToken}`;
       setCreated({ escrowId: escrowRef.id, buyerLink });
     } catch (err) {
@@ -253,6 +391,7 @@ export default function CreateEscrow() {
       setSubmitting(false);
     }
   }
+
 
   if (created) {
     return (
@@ -296,6 +435,7 @@ export default function CreateEscrow() {
     );
   }
 
+
   return (
     <div className="app-shell">
       <AppSidebar active="new" />
@@ -307,7 +447,9 @@ export default function CreateEscrow() {
           account — you only get paid once they confirm the item arrived.
         </p>
 
+
         {error && <div className="error-banner">{error}</div>}
+
 
         <div className="create-shell">
           <form onSubmit={handleSubmit}>
@@ -381,6 +523,7 @@ export default function CreateEscrow() {
               </div>
             </div>
 
+
             <div className="card">
               <h3 style={{ fontSize: 15 }}>Where should we send your money?</h3>
               <div className="field">
@@ -396,14 +539,7 @@ export default function CreateEscrow() {
                 {banksLoading ? (
                   <input value="" placeholder="Loading banks…" disabled />
                 ) : banks.length > 0 ? (
-                  <select value={bankCode} onChange={(e) => setBankCode(e.target.value)}>
-                    <option value="">Select a bank</option>
-                    {banks.map((b) => (
-                      <option key={b.code} value={b.code}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
+                  <BankSearchSelect banks={banks} value={bankCode} onChange={setBankCode} />
                 ) : (
                   <input
                     value={bankCode}
@@ -413,6 +549,7 @@ export default function CreateEscrow() {
                 )}
                 {banksError && <div className="hint" style={{ color: "var(--danger)" }}>{banksError}</div>}
               </div>
+
 
               {resolving && <div className="hint">Checking account…</div>}
               {!resolving && resolvedName && (
@@ -446,6 +583,7 @@ export default function CreateEscrow() {
               )}
             </div>
 
+
             <div className="card">
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>Auto-release window</label>
@@ -463,10 +601,12 @@ export default function CreateEscrow() {
               </div>
             </div>
 
+
             <button className="btn btn-primary" type="submit" disabled={submitting}>
               {uploadingPhoto ? "Uploading photo…" : submitting ? "Creating…" : "Create escrow & get payment link"}
             </button>
           </form>
+
 
           {/* Desktop-only — hidden below 960px. Shows the buyer what they'll
               see, updating live as the seller fills the form in. */}
@@ -510,3 +650,5 @@ export default function CreateEscrow() {
     </div>
   );
 }
+
+

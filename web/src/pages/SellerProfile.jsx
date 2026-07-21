@@ -7,6 +7,9 @@ import SellerNav from "../components/SellerNav";
 import SellerTrustBadge from "../components/SellerTrustBadge";
 import SealBadge from "../components/SealBadge";
 
+
+
+
 // Seller's own profile — what a buyer sees represented back to them, plus
 // their recent escrow activity. Reads sellers/{uid} and sellerStats/{uid}
 // directly (firestore.rules allow a seller to read both of their own docs),
@@ -34,6 +37,9 @@ import SealBadge from "../components/SealBadge";
 // set of AppSidebar/SellerNav `active` keys: I'm reading displayName /
 // handle / location / bio off the seller doc, and using active="profile".
 // Both are one-line fixes if the real names differ.
+
+
+
 
 function TrustRing({ pct, initials }) {
   const r = 29;
@@ -74,12 +80,18 @@ function TrustRing({ pct, initials }) {
   );
 }
 
+
+
+
 export default function SellerProfile() {
   const { user } = useAuth();
   const [seller, setSeller] = useState(null);
   const [stats, setStats] = useState(null);
   const [recentEscrows, setRecentEscrows] = useState([]);
   const [loading, setLoading] = useState(true);
+
+
+
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -91,11 +103,17 @@ export default function SellerProfile() {
         limit(5)
       );
 
+
+
+
       const [sellerSnap, statsSnap, escrowsSnap] = await Promise.all([
         getDoc(doc(db, "sellers", user.uid)),
         getDoc(doc(db, "sellerStats", user.uid)),
         getDocs(escrowsQuery),
       ]);
+
+
+
 
       setSeller(sellerSnap.exists() ? sellerSnap.data() : null);
       setStats(statsSnap.exists() ? statsSnap.data() : { completedCount: 0, disputedCount: 0 });
@@ -115,6 +133,9 @@ export default function SellerProfile() {
     })();
   }, [user]);
 
+
+
+
   if (loading) {
     return (
       <div className="app-shell">
@@ -127,6 +148,9 @@ export default function SellerProfile() {
     );
   }
 
+
+
+
   const initials = (seller?.displayName || user?.email || "?")
     .split(" ")
     .map((s) => s[0])
@@ -134,10 +158,16 @@ export default function SellerProfile() {
     .join("")
     .toUpperCase();
 
+
+
+
   const completed = stats?.completedCount || 0;
   const disputed = stats?.disputedCount || 0;
   const total = completed + disputed;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+
+
 
   return (
     <div className="app-shell">
@@ -148,6 +178,9 @@ export default function SellerProfile() {
         <p className="muted" style={{ marginBottom: 20 }}>
           What buyers see represented back to them on their payment page.
         </p>
+
+
+
 
         <div className="card" style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <TrustRing pct={pct} initials={initials} />
@@ -166,15 +199,24 @@ export default function SellerProfile() {
           </div>
         </div>
 
+
+
+
         {seller?.bio && (
           <div className="card">
             <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.5 }}>{seller.bio}</p>
           </div>
         )}
 
+
+
+
         <div className="card">
           <SellerTrustBadge stats={stats} />
         </div>
+
+
+
 
         {recentEscrows.length > 0 && (
           <div className="card">
@@ -229,14 +271,10 @@ export default function SellerProfile() {
             </div>
           </div>
         )}
-
-        <button
-          className="btn btn-ghost"
-          onClick={() => navigator.clipboard?.writeText(window.location.href)}
-        >
-          Copy profile link
-        </button>
       </div>
     </div>
   );
 }
+
+
+
