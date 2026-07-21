@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { collection, doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage, FUNCTIONS_BASE_URL } from "../lib/firebase";
@@ -50,7 +51,6 @@ export default function CreateEscrow() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null);
-  const [showQR, setShowQR] = useState(false);
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -277,24 +277,20 @@ export default function CreateEscrow() {
             >
               Copy link
             </button>
-            <button
-              className="btn btn-ghost"
-              style={{ marginTop: 10 }}
-              onClick={() => setShowQR((v) => !v)}
-            >
-              {showQR ? "Hide QR code" : "Show QR code"}
-            </button>
-            {showQR && (
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
-                <div style={{ background: "white", padding: 16, borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
-                  <QRCodeSVG value={created.buyerLink} size={180} fgColor="#1b1f3b" level="M" />
-                </div>
+            <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
+              <div style={{ background: "white", padding: 16, borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                <QRCodeSVG value={created.buyerLink} size={180} fgColor="#1b1f3b" level="M" />
               </div>
-            )}
+            </div>
           </div>
-          <button className="btn btn-ghost" onClick={() => setCreated(null)}>
-            Create another
-          </button>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setCreated(null)}>
+              Create another
+            </button>
+            <Link to="/dashboard" className="btn btn-primary" style={{ flex: 1, textDecoration: "none", textAlign: "center" }}>
+              Go to dashboard
+            </Link>
+          </div>
         </div>
       </div>
     );
