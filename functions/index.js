@@ -772,6 +772,40 @@ exports.onEscrowStatusChange = onDocumentUpdated(
   }
 );
 
+exports.onTransactionCreated = onDocumentCreated(
+  { document: "transactions/{transactionId}", secrets: [EMAILJS_PRIVATE_KEY] },
+  async (event) => {
+    const data = event.data?.data();
+    if (!data?.escrowId) return;
+
+    const escrowDoc = await db.collection("escrows").doc(data.escrowId).get();
+    if (!escrowDoc.exists) return;
+    const escrow = escrowDoc.data();
+
+    const label = describeTransactionEvent(data.type);
+    const item = escrow.itemDesc || "your HoldPay transaction";
+    const naira = escrow.amount ? `₦${(escrow.amount / 100).toLocaleString("en-NG")}` : "";
+
+    let sellerEmail = null;
+    try {
+      if (escrow.sellerUid) {
+        sellerEmail = (await admin.auth().getUser(escrow.sellerUid)).email;
+      }
+    } catch (err) {
+      logger.warn("onTransactionCreated: couldn't look up seller email", err);
+    }
+    const buyerEmail = escrow.buyerContact?.email;
+
+    const apiKey = EMAILJS_PRIVATE_KEY.value();
+    const html = `<p><strong>${item}</strong>${naira ? ` (${naira})` : ""} — ${label}.</p>`;
+    const subject = `HoldPay update: ${label}`;
+
+    await Promise.all([
+      sendEmail(apiKey, { to: buyerEmail, subject, html }),
+      sendEmail(apiKey, { to: sellerEmail, subject, html }),
+    ]);
+  }
+);
 // ---------------------------------------------------------------------------
 // 2. releaseFunds
 //    Called from the buyer's confirmation link. Validates the token,
