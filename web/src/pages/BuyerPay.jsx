@@ -173,7 +173,8 @@ export default function BuyerPay() {
             style={{
               width: "100%",
               aspectRatio: "4 / 3",
-              objectFit: "cover",
+              objectFit: "contain",
+              background: "var(--paper)",
               borderRadius: "var(--radius)",
               marginBottom: 14,
             }}
