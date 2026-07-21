@@ -153,8 +153,8 @@ export default function CreateEscrow() {
     e.preventDefault();
     setError(null);
 
-    if (!itemDesc.trim() || !amountNaira || !buyerPhone.trim()) {
-      setError("Fill in the item, price, and buyer's phone number.");
+    if (!itemDesc.trim() || !amountNaira || !buyerPhone.trim() || !buyerEmail.trim()) {
+      setError("Fill in the item, price, buyer's phone number, and buyer's email.");
       return;
     }
 
@@ -346,15 +346,17 @@ export default function CreateEscrow() {
                 <div className="hint">Used to send the buyer their payment link.</div>
               </div>
               <div className="field">
-                <label>Buyer's email (optional)</label>
+                <label>Buyer's email</label>
                 <input
                   type="email"
+                  required
                   value={buyerEmail}
                   onChange={(e) => setBuyerEmail(e.target.value)}
                   placeholder="buyer@example.com"
                 />
                 <div className="hint">
-                  If given, they'll get email updates when the item ships and when funds release.
+                  Required — they'll get email updates at every step: payment received,
+                  shipped, released, and any disputes.
                 </div>
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
